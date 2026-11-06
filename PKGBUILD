@@ -3,27 +3,79 @@
 # Contributor: Andrea Scarpino <andrea@archlinux.org>
 
 pkgname=okular
-pkgver=23.08.3
-pkgrel=1
+pkgver=26.08.3
+pkgrel=4
 pkgdesc='Document Viewer'
 arch=(x86_64)
 url='https://apps.kde.org/okular/'
 license=(GPL LGPL FDL)
-groups=(kde-applications kde-graphics)
-depends=(djvulibre libspectre libkexiv2 poppler-qt5 kpty5 kactivities5 threadweaver5 kparts5 purpose5 discount phonon-qt5)
-makedepends=(extra-cmake-modules ebook-tools kdegraphics-mobipocket kdoctools5 khtml chmlib)
+depends=(discount
+         djvulibre
+         freetype2
+         gcc-libs
+         glibc
+         plasma-activities
+         karchive
+         kbookmarks
+         kcolorscheme
+         kcompletion
+         kconfig
+         kconfigwidgets
+         kcoreaddons
+         kcrash
+         ki18n
+         kio
+         kitemviews
+         kparts
+         kpty
+         ktextwidgets
+         kwallet
+         kwidgetsaddons
+         kwindowsystem
+         kxmlgui
+         libjpeg-turbo
+         libkexiv2
+         libspectre
+         libtiff
+         phonon-qt6
+         poppler-qt6
+         purpose
+         qt6-base
+         qt6-declarative
+         qt6-speech
+         qt6-svg
+         threadweaver
+         zlib)
+makedepends=(ebook-tools
+             extra-cmake-modules
+             kdegraphics-mobipocket
+             kdoctools)
 optdepends=('ebook-tools: mobi and epub support'
-            'kdegraphics-mobipocket: mobi support' 'libzip: CHM support'
-            'khtml: CHM support' 'chmlib: CHM support' 'calligra: ODT and ODP support'
-            'unrar: Comic Book Archive support' 'unarchiver: Comic Book Archive support (alternative)'
-            'kde-cli-tools: to configure web shortcuts' 'plasma-workspace: to configure web shortcuts')
-source=(https://download.kde.org/stable/release-service/$pkgver/src/$pkgname-$pkgver.tar.xz{,.sig})
-sha256sums=('4254557578d6e95c5708bc5ae0b0bc2b9b4961d56c38f3a8fdafafc9ddbd119b'
-            'SKIP')
-validpgpkeys=(CA262C6C83DE4D2FB28A332A3A6A4DB839EAA6D7  # Albert Astals Cid <aacid@kde.org>
-              F23275E4BF10AFC1DF6914A6DBD2CE893E2D1C87  # Christoph Feck <cfeck@kde.org>
-              D81C0CB38EB725EF6691C385BB463350D6EF31EF) # Heiko Becker <heiko.becker@kde.org>
+            'kdegraphics-mobipocket: mobi support'
+            'unarchiver: Comic Book Archive support (alternative)'
+            'unrar: Comic Book Archive support')
+groups=(kde-applications
+        kde-graphics)
+
+source=(
+	https://download.kde.org/stable/release-service/$pkgver/src/$pkgname-$pkgver.tar.xz
+	'0001-quit-app-when-last-tab-close.patch'
+	'0002-limit-normal-and-aggressive-memory-cache.patch'
+    '0001-add-florilegium.patch'
+	)
+
+sha256sums=('8db527297b4e6aa17b3063739f8e1a4fe206691428ffc4ff544053e111187412'
+            '6d0f2e83e63c9fa31027344725ef3c659d508bc977dcf88099837c6ce2c789f3'
+            '622f173b5d7c3b0c0d0a04bca77a4d07a3b5dc6b0d383787ccd19746bc763b5c'
+            '5e324d67fb182956d8c7b12be8e3c662be96dfcb93fc7a0a0be66e5e7423e582')
 options=(!zipman)
+
+prepare() {
+  cd ${srcdir}/$pkgname-$pkgver
+  patch -Np1 -i ${srcdir}/0001-quit-app-when-last-tab-close.patch
+  patch -Np1 -i ${srcdir}/0002-limit-normal-and-aggressive-memory-cache.patch
+  patch -Np1 -i ${srcdir}/0001-add-florilegium.patch
+}
 
 build() {
   cmake -B build -S $pkgname-$pkgver \

@@ -1,0 +1,27 @@
+From 6a6ae48a90e81c1126f72d108d697fbfbfbdbb0f Mon Sep 17 00:00:00 2001
+From: lilongyu <lilongyu@linakesi.com>
+Date: Thu, 25 Apr 2024 09:46:40 +0800
+Subject: [PATCH] quit app when last tab close
+
+---
+ shell/shell.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/shell/shell.cpp b/shell/shell.cpp
+index 9074a1603..b111dca5c 100644
+--- a/shell/shell.cpp
++++ b/shell/shell.cpp
+@@ -912,8 +912,9 @@ void Shell::closeTab(int tab)
+         }
+     } else if (closeSuccess && m_tabs.count() == 1) {
+         // Show welcome screen when the last tab is closed.
++        close();
+ 
+-        showWelcomeScreen();
++        //showWelcomeScreen();
+     }
+ }
+ 
+-- 
+2.44.0
+

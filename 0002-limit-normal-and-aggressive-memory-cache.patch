@@ -1,0 +1,235 @@
+From 1e2c7c8cb5aa8b4d5f7f0f6d02c5f81c7d9c4f11 Mon Sep 17 00:00:00 2001
+From: OpenCode <opencode@local>
+Date: Fri, 10 Jul 2026 00:00:00 +0000
+Subject: [PATCH] limit normal and aggressive memory cache
+
+---
+ core/document.cpp | 82 +++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ core/document_p.h |  8 ++++++
+ core/page.cpp     | 11 +++++++-
+ 3 files changed, 99 insertions(+), 2 deletions(-)
+
+diff --git a/core/document.cpp b/core/document.cpp
+index 23dc65757..f27912b07 100644
+--- a/core/document.cpp
++++ b/core/document.cpp
+@@ -109,11 +109,13 @@ struct AllocatedPixmap {
+     DocumentObserver *observer;
+     int page;
+     qulonglong memory;
++    qint64 lastAccessMs;
+     // public constructor: initialize data
+-    AllocatedPixmap(DocumentObserver *o, int p, qulonglong m)
++    AllocatedPixmap(DocumentObserver *o, int p, qulonglong m, qint64 lastAccess)
+         : observer(o)
+         , page(p)
+         , memory(m)
++        , lastAccessMs(lastAccess)
+     {
+     }
+ };
+@@ -166,6 +168,9 @@ constexpr int kMemCheckTime = 2000; // in msec
+ // getFreeMemory is called every two seconds when checking to see if the system is low on memory. If this timeout was left at kMemCheckTime, half of these checks are useless (when okular is idle) since the cache is used when the cache is
+ // <=2 seconds old. This means that after the system is out of memory, up to 4 seconds (instead of 2) could go by before okular starts to free memory.
+ constexpr int kFreeMemCacheTimeout = kMemCheckTime - 100;
++constexpr qint64 kNormalPixmapCacheTtlMs = 60 * 1000;
++constexpr qint64 kAggressivePixmapCacheTtlMs = 10 * 60 * 1000;
++constexpr qint64 kGreedyPixmapCacheTtlMs = 30 * 60 * 1000;
+ 
+ /***** Document ******/
+ 
+@@ -252,5 +257,7 @@ qulonglong DocumentPrivate::calculateMemoryToFree()
+ {
+     // [MEM] choose memory parameters based on configuration profile
++    static constexpr qulonglong NormalMemoryLimit = Q_UINT64_C(2) * 1024 * 1024 * 1024;
++    static constexpr qulonglong AggressiveMemoryLimit = Q_UINT64_C(4) * 1024 * 1024 * 1024;
+     qulonglong clipValue = 0;
+     qulonglong memoryToFree = 0;
+ 
+@@ -261,10 +268,11 @@ qulonglong DocumentPrivate::calculateMemoryToFree()
+         break;
+ 
+     case SettingsCore::EnumMemoryLevel::Normal: {
+-        qulonglong thirdTotalMemory = getTotalMemory() / 3;
++        const qulonglong thirdTotalMemory = getTotalMemory() / 3;
++        const qulonglong normalMemoryLimit = qMin(thirdTotalMemory, NormalMemoryLimit);
+         qulonglong freeMemory = getFreeMemory();
+-        if (m_allocatedPixmapsTotalMemory > thirdTotalMemory) {
+-            memoryToFree = m_allocatedPixmapsTotalMemory - thirdTotalMemory;
++        if (m_allocatedPixmapsTotalMemory > normalMemoryLimit) {
++            memoryToFree = m_allocatedPixmapsTotalMemory - normalMemoryLimit;
+         }
+         if (m_allocatedPixmapsTotalMemory > freeMemory) {
+             clipValue = (m_allocatedPixmapsTotalMemory - freeMemory) / 2;
+@@ -272,6 +280,9 @@ qulonglong DocumentPrivate::calculateMemoryToFree()
+     } break;
+ 
+     case SettingsCore::EnumMemoryLevel::Aggressive: {
++        if (m_allocatedPixmapsTotalMemory > AggressiveMemoryLimit) {
++            memoryToFree = m_allocatedPixmapsTotalMemory - AggressiveMemoryLimit;
++        }
+         qulonglong freeMemory = getFreeMemory();
+         if (m_allocatedPixmapsTotalMemory > freeMemory) {
+             clipValue = (m_allocatedPixmapsTotalMemory - freeMemory) / 2;
+@@ -299,6 +310,62 @@ void DocumentPrivate::cleanupPixmapMemory()
+     cleanupPixmapMemory(calculateMemoryToFree());
+ }
+ 
++qint64 DocumentPrivate::pixmapCacheTtlMs() const
++{
++    switch (SettingsCore::memoryLevel()) {
++    case SettingsCore::EnumMemoryLevel::Low:
++        return 0;
++    case SettingsCore::EnumMemoryLevel::Normal:
++        return kNormalPixmapCacheTtlMs;
++    case SettingsCore::EnumMemoryLevel::Aggressive:
++        return kAggressivePixmapCacheTtlMs;
++    case SettingsCore::EnumMemoryLevel::Greedy:
++        return kGreedyPixmapCacheTtlMs;
++    }
++
++    return 0;
++}
++
++void DocumentPrivate::touchAllocatedPixmap(DocumentObserver *observer, int page)
++{
++    const qint64 nowMs = m_pixmapCacheTimer.elapsed();
++    for (AllocatedPixmap *pixmap : m_allocatedPixmaps) {
++        if (pixmap->observer == observer && pixmap->page == page) {
++            pixmap->lastAccessMs = nowMs;
++            break;
++        }
++    }
++}
++
++void DocumentPrivate::cleanupExpiredPixmaps()
++{
++    const qint64 ttlMs = pixmapCacheTtlMs();
++    if (ttlMs <= 0) {
++        return;
++    }
++
++    const qint64 nowMs = m_pixmapCacheTimer.elapsed();
++    const int currentViewportPage = (*m_viewportIterator).pageNumber;
++    QSet<int> visiblePages;
++    for (const auto *visibleRect : std::as_const(m_pageRects)) {
++        visiblePages.insert(visibleRect->pageNumber);
++    }
++
++    auto it = m_allocatedPixmaps.begin();
++    while (it != m_allocatedPixmaps.end()) {
++        AllocatedPixmap *p = *it;
++        if (p->page == currentViewportPage || visiblePages.contains(p->page) || nowMs - p->lastAccessMs < ttlMs) {
++            ++it;
++            continue;
++        }
++
++        it = m_allocatedPixmaps.erase(it);
++        m_allocatedPixmapsTotalMemory -= p->memory;
++        m_pagesVector.at(p->page)->deletePixmap(p->observer);
++        delete p;
++    }
++}
++
+ void DocumentPrivate::cleanupPixmapMemory(qulonglong memoryToFree)
+ {
+     if (memoryToFree < 1) {
+@@ -1345,6 +1412,8 @@ void DocumentPrivate::saveDocumentInfo() const
+ 
+ void DocumentPrivate::slotTimedMemoryCheck()
+ {
++    cleanupExpiredPixmaps();
++
+     // [MEM] clean memory (for 'free mem dependent' profiles only)
+     if (SettingsCore::memoryLevel() != SettingsCore::EnumMemoryLevel::Low && m_allocatedPixmapsTotalMemory > 1024 * 1024) {
+         cleanupPixmapMemory();
+@@ -5564,7 +5633,7 @@ void DocumentPrivate::requestDone(PixmapRequest *req)
+                 memoryBytes = 4 * qulonglong(req->width()) * req->height();
+             }
+ 
+-            AllocatedPixmap *memoryPage = new AllocatedPixmap(req->observer(), req->pageNumber(), memoryBytes);
++            AllocatedPixmap *memoryPage = new AllocatedPixmap(req->observer(), req->pageNumber(), memoryBytes, m_pixmapCacheTimer.elapsed());
+             m_allocatedPixmaps.push_back(memoryPage);
+             m_allocatedPixmapsTotalMemory += memoryBytes;
+ 
+diff --git a/core/document_p.h b/core/document_p.h
+index ee747d503..f3d00cf47 100644
+--- a/core/document_p.h
++++ b/core/document_p.h
+@@ -17,6 +17,7 @@
+ // qt/kde/system includes
+ #include <KConfigDialog>
+ #include <KPluginMetaData>
++#include <QElapsedTimer>
+ #include <QHash>
+ #include <QMap>
+ #include <QMutex>
+@@ -131,7 +132,8 @@ public:
+         , m_docdataMigrationNeeded(false)
+         , m_synctex_scanner(nullptr)
+     {
++        m_pixmapCacheTimer.start();
+         QDomImplementation::setInvalidDataPolicy(QDomImplementation::AcceptInvalidChars);
+         calculateMaxTextPages();
+     }
+ 
+@@ -142,7 +144,10 @@ public:
+     qulonglong calculateMemoryToFree();
+     void cleanupPixmapMemory();
+     void cleanupPixmapMemory(qulonglong memoryToFree);
++    void cleanupExpiredPixmaps();
+     AllocatedPixmap *searchLowestPriorityPixmap(bool unloadableOnly = false, bool thenRemoveIt = false, DocumentObserver *observer = nullptr /* any */);
++    void touchAllocatedPixmap(DocumentObserver *observer, int page);
++    qint64 pixmapCacheTtlMs() const;
+     void calculateMaxTextPages();
+     qulonglong getTotalMemory();
+     qulonglong getFreeMemory(qulonglong *freeSwap = nullptr);
+@@ -284,6 +289,7 @@ public:
+     QMutex m_pixmapRequestsMutex;
+     std::list<AllocatedPixmap *> m_allocatedPixmaps;
+     qulonglong m_allocatedPixmapsTotalMemory;
++    QElapsedTimer m_pixmapCacheTimer;
+     QList<int> m_allocatedTextPagesFifo;
+     int m_maxAllocatedTextPages;
+     bool m_warnedOutOfMemory;
+diff --git a/core/page.cpp b/core/page.cpp
+index 27158c6f8..8f620af76 100644
+--- a/core/page.cpp
++++ b/core/page.cpp
+@@ -225,7 +225,11 @@ bool Page::hasPixmap(DocumentObserver *observer, int width, int height, const No
+             return false;
+         }
+ 
+-        return tm->hasPixmap(rect);
++        const bool hasPixmap = tm->hasPixmap(rect);
++        if (hasPixmap) {
++            d->m_doc->touchAllocatedPixmap(observer, number());
++        }
++        return hasPixmap;
+     }
+ 
+     QMap<DocumentObserver *, PagePrivate::PixmapObject>::const_iterator it = d->m_pixmaps.constFind(observer);
+@@ -234,6 +238,7 @@ bool Page::hasPixmap(DocumentObserver *observer, int width, int height, const No
+     }
+ 
+     if (width == -1 || height == -1) {
++        d->m_doc->touchAllocatedPixmap(observer, number());
+         return true;
+     }
+ 
+@@ -261,7 +266,12 @@ bool Page::hasPixmap(DocumentObserver *observer, int width, height, const No
+ 
+     const QPixmap *pixmap = it.value().m_pixmap;
+ 
+-    return (pixmap->width() == width && pixmap->height() == height);
++    const bool hasPixmap = pixmap->width() == width && pixmap->height() == height;
++    if (hasPixmap) {
++        d->m_doc->touchAllocatedPixmap(observer, number());
++    }
++
++    return hasPixmap;
+ }
+ 
+ void Page::setPageSize(DocumentObserver *observer, int width, int height)
+-- 
+2.47.1

@@ -1,0 +1,2140 @@
+From ba3201143a3d97a216bc4d4a8509662ae7c6a53b Mon Sep 17 00:00:00 2001
+From: leaeasy <leaeasy@qq.com>
+Date: Fri, 6 Nov 2026 14:25:45 +0800
+Subject: [PATCH] =?UTF-8?q?add:=20=E5=A2=9E=E5=8A=A0florilegium=E6=B0=B4?=
+ =?UTF-8?q?=E5=8D=B0=E7=94=9F=E6=88=90=E7=AE=97=E6=B3=95=E6=8F=92=E4=BB=B6?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ CMakeLists.txt                  |    3 +
+ autotests/CMakeLists.txt        |   12 +
+ autotests/floralplugintest.cpp  | 1362 +++++++++++++++++++++++++++++++
+ autotests/parttest.cpp          |  197 +++++
+ conf/okular.kcfg                |   10 +
+ part/dlgfloral.cpp              |   60 ++
+ part/dlgfloral.h                |   13 +
+ part/pagedecorationgeometry.h   |   31 +
+ part/pagedecorationinterface.h  |   28 +
+ part/pageview.cpp               |  139 +++-
+ part/pageview.h                 |    2 +-
+ part/part.rc                    |    3 +-
+ part/preferencesdialog.cpp      |    2 +
+ plugins/floral/CMakeLists.txt   |   11 +
+ plugins/floral/README.md        |  178 ++++
+ plugins/floral/floralplugin.cpp |  515 ++++++++++++
+ plugins/floral/geometry.h       |  242 ++++++
+ plugins/floral/growth.h         |  264 ++++++
+ plugins/floral/lateral.h        |  230 ++++++
+ plugins/floral/species.h        |  129 +++
+ 20 files changed, 3426 insertions(+), 5 deletions(-)
+ create mode 100644 autotests/floralplugintest.cpp
+ create mode 100644 part/dlgfloral.cpp
+ create mode 100644 part/dlgfloral.h
+ create mode 100644 part/pagedecorationgeometry.h
+ create mode 100644 part/pagedecorationinterface.h
+ create mode 100644 plugins/floral/CMakeLists.txt
+ create mode 100644 plugins/floral/README.md
+ create mode 100644 plugins/floral/floralplugin.cpp
+ create mode 100644 plugins/floral/geometry.h
+ create mode 100644 plugins/floral/growth.h
+ create mode 100644 plugins/floral/lateral.h
+ create mode 100644 plugins/floral/species.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 626a33258..413201aff 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -481,6 +481,8 @@ install(FILES conf/okular.kcfg DESTINATION ${KDE_INSTALL_KCFGDIR})
+ install(FILES conf/okular_core.kcfg DESTINATION ${KDE_INSTALL_KCFGDIR})
+ 
+ if(BUILD_DESKTOP)
++  add_subdirectory(plugins/floral)
++
+   # okularpart
+   set(okularpart_SRCS
+     gui/certificatemodel.cpp
+@@ -495,6 +497,7 @@ if(BUILD_DESKTOP)
+     part/dlgdebug.cpp
+     part/dlgeditor.cpp
+     part/dlggeneral.cpp
++    part/dlgfloral.cpp
+     part/dlgannotations.cpp
+     part/dlgperformance.cpp
+     part/dlgpresentation.cpp
+diff --git a/conf/okular.kcfg b/conf/okular.kcfg
+index 7698d44e1..4b50a5ff5 100644
+--- a/conf/okular.kcfg
++++ b/conf/okular.kcfg
+@@ -391,6 +391,16 @@
+   <entry key="UseCustomBackgroundColor" type="Bool" >
+    <default>false</default>
+   </entry>
++  <entry key="FloralBorders" type="Bool"><default>false</default></entry>
++  <entry key="FloralStyle" type="Enum">
++   <choices><choice name="Watercolor"/><choice name="Outline"/><choice name="Silhouette"/></choices>
++   <default>Watercolor</default>
++  </entry>
++  <entry key="FloralVariation" type="Int"><default>0</default><min>0</min><max>2147483647</max></entry>
++  <entry key="FloralDensity" type="Int"><default>50</default><min>0</min><max>100</max></entry>
++  <entry key="FloralOpacity" type="Int"><default>18</default><min>5</min><max>100</max></entry>
++  <entry key="FloralWidth" type="Int"><default>64</default><min>16</min><max>160</max></entry>
++  <entry key="FloralColor" type="Color"><default>#2456C4</default></entry>
+   <entry key="BackgroundColor" type="Color" >
+   </entry>
+  </group>
+diff --git a/part/dlgfloral.cpp b/part/dlgfloral.cpp
+new file mode 100644
+index 000000000..a2714c505
+--- /dev/null
++++ b/part/dlgfloral.cpp
+@@ -0,0 +1,60 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#include "dlgfloral.h"
++
++#include <KColorButton>
++#include <KLocalizedString>
++#include <QCheckBox>
++#include <QComboBox>
++#include <QFormLayout>
++#include <QHBoxLayout>
++#include <QPushButton>
++#include <QSpinBox>
++#include <limits>
++
++DlgFloral::DlgFloral(QWidget *parent)
++    : QWidget(parent)
++{
++    auto *layout = new QFormLayout(this);
++    auto *floral = new QCheckBox(i18nc("@option:check", "Show plant watermarks on pages"), this);
++    floral->setObjectName(QStringLiteral("kcfg_FloralBorders"));
++    floral->setToolTip(i18nc("@info:tooltip", "Paints pale Delft-blue plants over page content, growing from the lower-left corner."));
++    layout->addRow(QString(), floral);
++    auto *style = new QComboBox(this);
++    style->setObjectName(QStringLiteral("kcfg_FloralStyle"));
++    style->addItems({i18nc("@item:inlistbox plant style", "Watercolor"), i18nc("@item:inlistbox plant style", "Ink outlines"), i18nc("@item:inlistbox plant style", "Silhouette")});
++    style->setEnabled(false);
++    connect(floral, &QCheckBox::toggled, style, &QWidget::setEnabled);
++    layout->addRow(i18nc("@label:listbox", "Plant style:"), style);
++    auto *variation = new QSpinBox(this);
++    variation->setObjectName(QStringLiteral("kcfg_FloralVariation"));
++    variation->setRange(0, std::numeric_limits<int>::max());
++    variation->setToolTip(i18nc("@info:tooltip", "The same variation restores the same plants. This setting applies to all books."));
++    auto *regenerate = new QPushButton(i18nc("@action:button", "New plants"), this);
++    regenerate->setObjectName(QStringLiteral("floral_regenerate"));
++    connect(regenerate, &QPushButton::clicked, this, [variation] { variation->setValue(variation->value() == variation->maximum() ? 0 : variation->value() + 1); });
++    variation->setEnabled(false);
++    regenerate->setEnabled(false);
++    connect(floral, &QCheckBox::toggled, variation, &QWidget::setEnabled);
++    connect(floral, &QCheckBox::toggled, regenerate, &QWidget::setEnabled);
++    auto *variationLayout = new QHBoxLayout;
++    variationLayout->addWidget(variation);
++    variationLayout->addWidget(regenerate);
++    layout->addRow(i18nc("@label:spinbox", "Plant variation:"), variationLayout);
++    auto addFloralSpin = [&](const char *name, const QString &label, int minimum, int maximum, const QString &suffix) {
++        auto *spin = new QSpinBox(this);
++        spin->setObjectName(QString::fromLatin1(name));
++        spin->setRange(minimum, maximum);
++        spin->setSuffix(suffix);
++        spin->setEnabled(false);
++        connect(floral, &QCheckBox::toggled, spin, &QWidget::setEnabled);
++        layout->addRow(label, spin);
++    };
++    addFloralSpin("kcfg_FloralDensity", i18nc("@label:spinbox", "Plant density:"), 0, 100, QStringLiteral(" %"));
++    addFloralSpin("kcfg_FloralOpacity", i18nc("@label:spinbox", "Watermark opacity:"), 5, 100, QStringLiteral(" %"));
++    addFloralSpin("kcfg_FloralWidth", i18nc("@label:spinbox", "Watermark width:"), 16, 160, i18nc("@item:intext pixel unit", " px"));
++    auto *floralColor = new KColorButton(this);
++    floralColor->setObjectName(QStringLiteral("kcfg_FloralColor"));
++    floralColor->setEnabled(false);
++    connect(floral, &QCheckBox::toggled, floralColor, &QWidget::setEnabled);
++    layout->addRow(i18nc("@label:chooser", "Watermark color:"), floralColor);
++}
+diff --git a/part/dlgfloral.h b/part/dlgfloral.h
+new file mode 100644
+index 000000000..dfb7c964c
+--- /dev/null
++++ b/part/dlgfloral.h
+@@ -0,0 +1,13 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef OKULAR_DLGFLORAL_H
++#define OKULAR_DLGFLORAL_H
++
++#include <QWidget>
++
++class DlgFloral : public QWidget
++{
++public:
++    explicit DlgFloral(QWidget *parent);
++};
++
++#endif
+diff --git a/part/pagedecorationgeometry.h b/part/pagedecorationgeometry.h
+new file mode 100644
+index 000000000..850121fb5
+--- /dev/null
++++ b/part/pagedecorationgeometry.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef OKULAR_PAGEDECORATIONGEOMETRY_H
++#define OKULAR_PAGEDECORATIONGEOMETRY_H
++
++#include <QList>
++#include <QRectF>
++#include <QRegion>
++
++namespace Okular
++{
++// Content and form rectangles are upright normalized coordinates; annotations
++// already supply their displayed coordinates. Keep rounding outwards for safety.
++inline QRectF decorationPageRect(QRectF normalized, const QRectF &page, int rotation = 0)
++{
++    for (int i = 0; i < rotation % 4; ++i) {
++        normalized = QRectF(1 - normalized.bottom(), normalized.left(), normalized.height(), normalized.width());
++    }
++    return QRectF(page.left() + normalized.left() * page.width(), page.top() + normalized.top() * page.height(), normalized.width() * page.width(), normalized.height() * page.height());
++}
++
++inline QRegion decorationWatermarkClip(const QRectF &visiblePage, const QList<QRectF> &obstacles, qreal padding)
++{
++    QRegion clip(visiblePage.toAlignedRect());
++    for (const QRectF &obstacle : obstacles) {
++        clip -= obstacle.adjusted(-padding, -padding, padding, padding).toAlignedRect();
++    }
++    return clip;
++}
++}
++
++#endif
+diff --git a/part/pagedecorationinterface.h b/part/pagedecorationinterface.h
+new file mode 100644
+index 000000000..81bcfd58a
+--- /dev/null
++++ b/part/pagedecorationinterface.h
+@@ -0,0 +1,28 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef OKULAR_PAGEDECORATIONINTERFACE_H
++#define OKULAR_PAGEDECORATIONINTERFACE_H
++
++#include <QColor>
++#include <QPainter>
++#include <QtPlugin>
++
++namespace Okular
++{
++enum class PageDecorationStyle { Watercolor, Outline, Silhouette };
++
++// Private, versioned desktop extension. Coordinates are in logical viewport pixels.
++// The caller supplies a safe clip; plugins must not change the document or painter state.
++// seed controls page composition; bookSeed controls recurring species independently.
++class PageDecorationInterface
++{
++public:
++    virtual ~PageDecorationInterface() = default;
++    virtual void paint(QPainter *painter, const QRectF &page, quint32 seed, int density, int width, const QColor &color, quint32 bookSeed = 0, PageDecorationStyle style = PageDecorationStyle::Watercolor) = 0;
++    virtual void paintWatermark(QPainter *painter, const QRectF &page, quint32 seed, int density, int width, const QColor &color, quint32 bookSeed = 0, PageDecorationStyle style = PageDecorationStyle::Watercolor, qreal readingProgress = 1, int documentPages = 0) = 0;
++};
++}
++
++#define OkularPageDecorationInterface_iid "org.kde.okular.PageDecorationInterface/7.0"
++Q_DECLARE_INTERFACE(Okular::PageDecorationInterface, OkularPageDecorationInterface_iid)
++
++#endif
+diff --git a/part/pageview.cpp b/part/pageview.cpp
+index 2774ff496..d0b9711fd 100644
+--- a/part/pageview.cpp
++++ b/part/pageview.cpp
+@@ -22,10 +22,13 @@
+ #include <QActionGroup>
+ #include <QApplication>
+ #include <QClipboard>
++#include <QCryptographicHash>
+ #include <QCursor>
+ #include <QDesktopServices>
++#include <QDir>
+ #include <QElapsedTimer>
+ #include <QEvent>
++#include <QFileInfo>
+ #include <QGestureEvent>
+ #include <QImage>
+ #include <QInputDialog>
+@@ -35,12 +38,14 @@
+ #include <QMimeDatabase>
+ #include <QNativeGestureEvent>
+ #include <QPainter>
++#include <QPluginLoader>
+ #include <QScrollBar>
+ #include <QScroller>
+ #include <QScrollerProperties>
+ #include <QSet>
+ #include <QTimer>
+ #include <QToolTip>
++#include <limits>
+ 
+ #include <KActionCollection>
+ #include <KActionMenu>
+@@ -78,6 +83,8 @@
+ #include "gui/pagepainter.h"
+ #include "gui/priorities.h"
+ #include "okmenutitle.h"
++#include "pagedecorationgeometry.h"
++#include "pagedecorationinterface.h"
+ #include "pageviewannotator.h"
+ #include "pageviewmouseannotation.h"
+ #include "pageviewutils.h"
+@@ -273,6 +280,7 @@ public:
+     QActionGroup *mouseModeActionGroup = nullptr;
+     ToggleActionMenu *aMouseModeMenu = nullptr;
+     QAction *aFitWindowToPage = nullptr;
++    QAction *aNewPlants = nullptr;
+ 
+     int setting_viewCols = 0;
+     bool rtl_Mode = false;
+@@ -553,6 +561,17 @@ void PageView::setupViewerActions(KActionCollection *ac)
+     ac->setDefaultShortcut(d->aZoomIn, QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Plus));
+     ac->setDefaultShortcut(d->aZoomOut, QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Minus));
+ 
++    d->aNewPlants = new QAction(QIcon::fromTheme(QStringLiteral("view-refresh")), i18nc("@action", "New Plants"), this);
++    ac->addAction(QStringLiteral("view_new_plants"), d->aNewPlants);
++    d->aNewPlants->setEnabled(Okular::Settings::floralBorders());
++    d->aNewPlants->setToolTip(i18nc("@info:tooltip", "Choose another saved plant variation for all books."));
++    connect(d->aNewPlants, &QAction::triggered, this, [this] {
++        const int variation = Okular::Settings::floralVariation();
++        Okular::Settings::setFloralVariation(variation == std::numeric_limits<int>::max() ? 0 : variation + 1);
++        Okular::Settings::self()->save();
++        viewport()->update();
++    });
++
+     // orientation menu actions
+     d->aRotateClockwise = new QAction(QIcon::fromTheme(QStringLiteral("object-rotate-right")), i18n("Rotate &Right"), this);
+     d->aRotateClockwise->setIconText(i18nc("Rotate right", "Right"));
+@@ -961,6 +980,10 @@ void PageView::reparseConfig()
+         d->annotator->reparseConfig();
+     }
+ 
++    if (d->aNewPlants) {
++        d->aNewPlants->setEnabled(Okular::Settings::floralBorders());
++    }
++
+     // Something like invert colors may have changed
+     // As we don't have a way to find out the old value
+     // We just update the viewport, this shouldn't be that bad
+@@ -1916,7 +1939,7 @@ void PageView::paintEvent(QPaintEvent *pe)
+             pixmapPainter.translate(-contentsRect.left(), -contentsRect.top());
+ 
+             // 1) Layer 0: paint items and clear bg on unpainted rects
+-            drawDocumentOnPainter(contentsRect, &pixmapPainter);
++            drawDocumentOnPainter(contentsRect, &pixmapPainter, true);
+             // 2a) Layer 1a: paint (blend) transparent selection (rectangle)
+             if (!selectionRect.isNull() && selectionRect.intersects(contentsRect) && !selectionRectInternal.contains(contentsRect)) {
+                 QRect blendRect = selectionRectInternal.intersected(contentsRect);
+@@ -1999,7 +2022,7 @@ void PageView::paintEvent(QPaintEvent *pe)
+             screenPainter.drawPixmap(contentsRect.left(), contentsRect.top(), doubleBuffer);
+         } else {
+             // 1) Layer 0: paint items and clear bg on unpainted rects
+-            drawDocumentOnPainter(contentsRect, &screenPainter);
++            drawDocumentOnPainter(contentsRect, &screenPainter, true);
+             // 2a) Layer 1a: paint opaque selection (rectangle)
+             if (!selectionRect.isNull() && selectionRect.intersects(contentsRect) && !selectionRectInternal.contains(contentsRect)) {
+                 screenPainter.setPen(palette().color(QPalette::Active, QPalette::Highlight).darker(110));
+@@ -3594,7 +3617,7 @@ std::vector<std::unique_ptr<Okular::RegularAreaRect>> PageView::textSelections(c
+     return ret;
+ }
+ 
+-void PageView::drawDocumentOnPainter(const QRect contentsRect, QPainter *p)
++void PageView::drawDocumentOnPainter(const QRect contentsRect, QPainter *p, bool decorations)
+ {
+     QColor backColor;
+ 
+@@ -3643,6 +3666,110 @@ void PageView::drawDocumentOnPainter(const QRect contentsRect, QPainter *p)
+         p->fillRect(backRect, backColor);
+     }
+ 
++    if (decorations && Okular::Settings::floralBorders()) {
++        // Keep the loader alive for the lifetime of its plugin. A missing optional
++        // plugin leaves the normal background intact.
++        static QPluginLoader loader;
++        static Okular::PageDecorationInterface *plugin = [&]() -> Okular::PageDecorationInterface * {
++            for (const QString &path : QCoreApplication::libraryPaths()) {
++                const QDir directory(path + QStringLiteral("/okular6/decorations"));
++                for (const QString &file : directory.entryList(QDir::Files)) {
++                    if (QFileInfo(file).completeBaseName() != QLatin1String("libokular_floral") && QFileInfo(file).completeBaseName() != QLatin1String("okular_floral")) {
++                        continue;
++                    }
++                    loader.setFileName(directory.filePath(file));
++                    if (auto *instance = qobject_cast<Okular::PageDecorationInterface *>(loader.instance())) {
++                        return instance;
++                    }
++                    loader.unload();
++                }
++            }
++            return nullptr;
++        }();
++        if (plugin) {
++            const QRegion originalClip = p->hasClipping() ? p->clipRegion() : QRegion(contentsRect);
++            p->save();
++            QColor paper = Qt::white;
++            if (Okular::SettingsCore::changeColors()) {
++                switch (Okular::SettingsCore::renderMode()) {
++                case Okular::SettingsCore::EnumRenderMode::Inverted:
++                case Okular::SettingsCore::EnumRenderMode::InvertLightness:
++                case Okular::SettingsCore::EnumRenderMode::InvertLuma:
++                case Okular::SettingsCore::EnumRenderMode::InvertLumaSymmetric:
++                    paper = Qt::black;
++                    break;
++                case Okular::SettingsCore::EnumRenderMode::Paper:
++                    paper = Okular::SettingsCore::paperColor();
++                    break;
++                case Okular::SettingsCore::EnumRenderMode::Recolor:
++                    paper = Okular::Settings::recolorBackground();
++                    break;
++                default:
++                    break;
++                }
++            }
++            p->setCompositionMode(paper.lightnessF() < 0.5 ? QPainter::CompositionMode_Screen : QPainter::CompositionMode_Multiply);
++            p->setOpacity(Okular::Settings::floralOpacity() / 100.0);
++            const QByteArray identity = QCryptographicHash::hash(d->document->currentDocument().toEncoded(), QCryptographicHash::Sha256);
++            quint32 bookSeed = 0;
++            for (int i = 0; i < 4; ++i) {
++                bookSeed = (bookSeed << 8) | quint8(identity[i]);
++            }
++            // Zero preserves the original document-derived garden. A saved variation
++            // changes both the species pool and the layout, consistently on reopening.
++            bookSeed ^= quint32(Okular::Settings::floralVariation()) * 0x9e3779b9U;
++            // Watermarks have a five-page working window, independent of how
++            // many pages a zoomed-out or multi-column viewport displays.
++            const int currentPage = qMax(0, d->document->viewport().pageNumber);
++            const int firstPage = qMax(0, currentPage - 2);
++            const int lastPage = qMin(int(d->items.size()) - 1, currentPage + 2);
++            for (int pageNumber = firstPage; pageNumber <= lastPage; ++pageNumber) {
++                const PageViewItem *item = d->items[pageNumber];
++                const QRect page = item->croppedGeometry();
++                const int width = Okular::Settings::floralWidth();
++                if (item->isVisible() && page.intersects(contentsRect)) {
++                    const quint32 seed = bookSeed ^ (quint32(item->pageNumber() + 1) * 7919U);
++                    {
++                        const Okular::Page *source = item->page();
++                        const QRectF fullPage = item->uncroppedGeometry();
++                        QList<QRectF> obstacles;
++                        for (const Okular::Annotation *annotation : source->annotations()) {
++                            QRectF rectangle = Okular::decorationPageRect(annotation->transformedBoundingRectangle().geometryF(1, 1), fullPage);
++                            // Popup and stamp icons may extend beyond their normalized bounds.
++                            obstacles.append(rectangle.adjusted(-24, -24, 24, 24));
++                        }
++                        for (const Okular::FormField *field : source->formFields()) {
++                            const QRectF bounds = field->rect().geometryF(1, 1);
++                            obstacles.append(Okular::decorationPageRect(bounds, fullPage, source->rotation()));
++                            // Some backends/widgets retain unrotated form coordinates.
++                            obstacles.append(Okular::decorationPageRect(bounds, fullPage));
++                        }
++                        const qreal padding = qMax(6.0, item->zoomFactor() * 3.0);
++                        const QRegion safe = Okular::decorationWatermarkClip(page, obstacles, padding) & QRegion(contentsRect) & originalClip;
++                        if (!safe.isEmpty()) {
++                            p->save();
++                            // Overlay page content, including documents without known content bounds.
++                            p->setClipRegion(safe);
++                            p->setOpacity(Okular::Settings::floralOpacity() / 100.0);
++                            plugin->paintWatermark(p,
++                                                 page,
++                                                 seed,
++                                                 Okular::Settings::floralDensity(),
++                                                 width,
++                                                 Okular::Settings::floralColor(),
++                                                 bookSeed,
++                                                 static_cast<Okular::PageDecorationStyle>(Okular::Settings::floralStyle()),
++                                                 qreal(item->pageNumber() + 1) / qMax(1U, d->document->pages()),
++                                                 d->document->pages());
++                            p->restore();
++                        }
++                    }
++                }
++            }
++            p->restore();
++        }
++    }
++
+     // take outline and shadow into account when testing whether a repaint is necessary
+     const qreal dpr = devicePixelRatioF();
+     const QRect checkRect = contentsRect.adjusted(-3, -3, 1, 1);
+@@ -5113,7 +5240,13 @@ void PageView::slotRequestVisiblePixmaps(int newValue)
+         newViewport.rePos.normalizedY = focusedY;
+         // set the viewport to other observers
+         // do not update history if the viewport is autoscrolling
++        const bool floralWindowChanged = Okular::Settings::floralBorders() && d->document->viewport().pageNumber != nearPageNumber;
+         d->document->setViewport(newViewport, this, false, d->scroller->state() != QScroller::Scrolling);
++        if (floralWindowChanged) {
++            // Scrolling may reuse existing viewport pixels. Repaint to remove
++            // watermarks on pages that just left the five-page window.
++            viewport()->update();
++        }
+     }
+     d->document->setVisiblePageRects(visibleRects, this);
+ }
+diff --git a/part/pageview.h b/part/pageview.h
+index f40d889fe..b1fa758bd 100644
+--- a/part/pageview.h
++++ b/part/pageview.h
+@@ -204,7 +204,7 @@ protected:
+ 
+ private:
+     // draw background and items on the opened qpainter
+-    void drawDocumentOnPainter(const QRect contentsRect, QPainter *p);
++    void drawDocumentOnPainter(const QRect contentsRect, QPainter *p, bool decorations = false);
+     // update item width and height using current zoom parameters
+     void updateItemSize(PageViewItem *item, int colWidth, int rowHeight);
+     // return the widget placed on a certain point or 0 if clicking on empty space
+diff --git a/part/part.rc b/part/part.rc
+index a954e0606..1902f7637 100644
+--- a/part/part.rc
++++ b/part/part.rc
+@@ -1,6 +1,6 @@
+ <?xml version="1.0"?>
+ <!DOCTYPE gui SYSTEM "kpartgui.dtd">
+-<gui name="okular_part" version="56">
++<gui name="okular_part" version="57">
+ <MenuBar>
+   <Menu name="file"><text>&amp;File</text>
+     <Action name="get_new_stuff" group="file_open"/>
+@@ -49,6 +49,7 @@
+       <Action name="view_orientation_original"/>
+     </Menu>
+     <Action name="view_trim_mode"/>
++    <Action name="view_new_plants"/>
+     <Separator/>
+     <Action name="view_toggle_forms"/>
+   </Menu>
+diff --git a/part/preferencesdialog.cpp b/part/preferencesdialog.cpp
+index 7709933d6..1a6950cca 100644
+--- a/part/preferencesdialog.cpp
++++ b/part/preferencesdialog.cpp
+@@ -14,6 +14,7 @@
+ #include "dlgannotations.h"
+ #include "dlgdebug.h"
+ #include "dlgeditor.h"
++#include "dlgfloral.h"
+ #include "dlggeneral.h"
+ #include "dlgperformance.h"
+ #include "dlgpresentation.h"
+@@ -39,6 +40,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent, KConfigSkeleton *skeleton,
+ #endif
+ 
+     addPage(m_general, i18n("General"), QStringLiteral("okular"), i18n("General Options"));
++    addPage(new DlgFloral(this), i18n("Plants"), QStringLiteral("preferences-desktop-theme"), i18n("Plant Decorations"));
+     m_accessibilityPage = addPage(m_accessibility, i18n("Accessibility"), QStringLiteral("preferences-desktop-accessibility"), i18n("Accessibility Reading Aids"));
+     addPage(m_performance, i18n("Performance"), QStringLiteral("preferences-system-performance"), i18n("Performance Tuning"));
+     if (embedMode == Okular::ViewerWidgetMode) {
+diff --git a/plugins/floral/CMakeLists.txt b/plugins/floral/CMakeLists.txt
+new file mode 100644
+index 000000000..5edcbf195
+--- /dev/null
++++ b/plugins/floral/CMakeLists.txt
+@@ -0,0 +1,11 @@
++add_library(okular_floral MODULE
++    floralplugin.cpp
++    species.h
++    geometry.h
++    lateral.h
++    growth.h
++)
++target_link_libraries(okular_floral PRIVATE Qt6::Widgets)
++target_include_directories(okular_floral PRIVATE ${PROJECT_SOURCE_DIR})
++set_target_properties(okular_floral PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/okular6/decorations)
++install(TARGETS okular_floral DESTINATION ${KDE_INSTALL_PLUGINDIR}/okular6/decorations)
+diff --git a/plugins/floral/README.md b/plugins/floral/README.md
+new file mode 100644
+index 000000000..f524f1547
+--- /dev/null
++++ b/plugins/floral/README.md
+@@ -0,0 +1,178 @@
++# 阅读植物水印：算法与维护说明
++
++本目录实现 Okular 的 `okular_floral` 页面装饰插件。植物以 Qt 路径程序化生成，
++不依赖 Lua、外部图片或 Florilegium 运行时。设计借鉴 Florilegium 的植物填充思路，
++当前的阅读进度侧枝是本项目独立实现的规则。
++
++在“配置 Okular → 植物”启用页面植物水印。默认关闭，默认颜色为 Delft-blue
++`#2456C4`，不透明度 18%，宽度 64 个逻辑像素。水彩、轮廓、剪影共用几何结构。
++
++## 源码分工
++
++| 文件 | 职责 |
++| --- | --- |
++| `species.h` | 从书籍种子生成 8 个物种的性状；文档开始时无重复选取并固定 4 个物种 |
++| `geometry.h` | `Garden`、`Stem`、`Organ` 数据模型；切线、方向、主轴曲线、根部连接与生长包络 |
++| `lateral.h` | 底部侧枝的进度预算、分叉几何、空间容量和花叶分配 |
++| `growth.h` | 统一入口 `growGarden`；竖向植物的空隙填充、发育阶段和老化 |
++| `floralplugin.cpp` | 花叶图案绘制、茎体轮廓、分层、缩放、矢量与栅格缓存；Qt 插件入口 |
++| `CMakeLists.txt` | 构建和安装插件模块 |
++
++宿主集成位于 `part/pagedecorationinterface.h`、`part/pageview.cpp`，设置界面位于
++`part/dlgfloral.*`，配置项位于 `conf/okular.kcfg`。接口是私有 Qt 插件接口，当前
++IID 版本为 `7.0`，修改接口后需要同步重编译宿主与插件。
++
++## 数据与生成流程
++
++`Garden` 保存茎体列表和器官列表。`Stem` 记录路径、根梢宽度、父茎、层级、
++附着位置和老化程度；`Organ` 区分叶、花和花苞，记录位置、角度、尺寸、老化
++程度，所属茎索引与物种索引。复叶整体算一个叶片，其小叶属于绘制细节。
++
++调用链为：
++
++```text
++PageView → paintWatermark → drawStrip → grow → growGarden
++                                               ├─ 竖向植物：空隙填充 → 发育 → 老化
++                                               └─ 底部侧枝：growReadingLateral
++```
++
++几何层不依赖画笔、颜色、纹理或缓存。绘制层将相同几何转换为不同画风。
++`growGarden` 在入口分流两种生长方式，竖向生成器不再保留旧的底部填充路径。
++
++## 竖向植物
++
++- 页面左侧混生三个物种，各自一根高低错落的主茎，共享同一个空间占位场，
++  避免分别生成后互相挤占。每根主茎及其后代分支保持同一物种的花叶性状。
++- 底层单物种生成接口仍稳定随机选择 1～3 根主茎，供单物种调用和几何测试使用。
++- 先生成主茎、顶部器官与茎上叶片，再建立间隔为 8 个几何单位的候选场。
++- 以占位圆近似花叶所需空间，优先选择较大空隙，将新枝接到附近已有茎体。
++  新枝也可成为后续枝条的来源，最多发展到三层。
++- 密度控制节点间距和空隙填充尝试次数；局部平滑包络允许植物偶尔突破常规宽度。
++- 进度前 20% 只有叶片；20%～40% 逐渐出现花苞；40% 后逐渐开花。
++- 文档超过 10 页且进度超过 80% 时，部分茎叶和花逐渐老化：叶片卷曲、
++  下垂、变淡，部分花变为花托和种子梗。位置和随机等级保持稳定。
++
++## 底部侧枝
++
++### 主轴与分叉
++
++进度 `p` 限制在 `[0, 1]`；不足 10% 不绘制底部侧枝。它只有一根主轴，
++在宿主定位时连接某根竖向主茎，根部可以位于可见页面下方。
++
++主轴的显示长度和整体高度随进度增加。起始段平缓，中段可轻微下弯，整体上扬；
++幼嫩末端以逐渐增加的曲率卷曲，进度增加时逐渐展开。超过 30% 后，仅主轴受到
++高度包络约束，最后 15% 可以略微超出；分叉及其花叶不受此高度约束。
++
++每达到一个 10% 节点，增加一根分叉，共 `floor(10p)` 根。附着点按弧长排列，
++间距以指数规则渐减，收紧系数为 `2.4`。主轴终点对应“下一根尚未出现的分叉”
++位置，因此末尾留白采用下一段预计间距，而不是重复上一段间距。
++
++分叉越靠近末端越短，且随自身年龄长大。分叉与主轴夹角约 32°～64°，
++方向有上下变化；三次贝塞尔控制柄限制离开方向与到达方向，避免急折和钩状弯曲。
++主轴末端始终有叶，分叉末端必有叶或花，末端器官与曲线的末端方向向量一致。
++
++### 花朵预算
++
++`lateralPlan` 计算预算和优先级，不负责空间布局：
++
++1. 花朵总预算为 `floor(10p)`，每 10% 增加一朵开放花。
++2. 主轴优先，最多三朵；其余依次分给较老分叉。
++3. 分叉容量随年龄由一朵升至三朵；最新分叉不分配花朵，也不绘制花苞。
++4. 每根分叉最多三朵，花心分散在末端和较靠近基部的位置。
++
++100% 时的典型花数为：主轴 3、第一分叉 3、第二分叉 3、第三分叉 1。
++花朵预设半径为 **24 个逻辑像素**，每个花位在 80%～120% 内稳定随机变化。
++半径不随进度、侧枝长度、分叉长度或年龄变化。底层几何 API 的默认半径仍为
++8 个几何单位；渲染入口显式传入 `24 / scale`，不要混淆这两种单位。
++
++### 叶片预算与防堆积
++
++叶片预算为 `floor(100p)`，以整数阅读百分比作为数量预算。主轴权重为 1.5，
++其他分叉按年龄和附着顺序加权。`allocateLateralLeaves` 每次选择
++`weight / (已有数量 + 1)` 最大且尚有容量的茎，分配一片叶。
++
++容量在分叉路径生成后计算，以实际路径长度和基部叶片尺寸估算可容纳数量：
++
++| 所属位置 | 叶片容量规则 |
++| --- | --- |
++| 三朵花的分叉 | 0 片叶 |
++| 两朵花的分叉 | 最多 2 片，仍受空间容量限制 |
++| 零或一朵花的分叉 | 按路径长度和叶片占位估算 |
++| 主轴 | 按轴长和有叶分叉的最大基部叶片估算，保留错落叶片与末端叶 |
++
++满载茎的剩余预算会分给其他尚有容量的茎；全部满载后停止分配，不强行画满预算。
++有容量却未分到叶片的茎至少补一片。末端叶计入配额，不额外增加；三花分叉
++不补叶。这样可避免成熟短分叉同时挤入大量大叶和三朵花。
++
++基部叶片约为原始尺寸的两倍，沿分叉方向逐渐缩小，末端尺寸单独保留。
++整片叶的最小逻辑长度为普通叶 12、窄叶 16、复叶 24 像素，避免早期不可辨认。
++主轴叶片覆盖整段轴线，在分段内随机错位并交替向两侧伸出；大小匹配最近的
++有叶分叉，不要求叶片集中在分叉附近。
++
++绘制顺序为茎体、叶、花苞、开放花，允许覆盖并保证花在叶之上。
++
++## 坐标、绘制与性能
++
++生成空间的常规宽度为 100。`scale = target.width / 100`，高度由目标纵横比
++换算，最高生成到 3200 个几何单位。两个方向保持相同缩放，避免植物变形。
++底部侧枝使用旋转后的局部坐标，局部负 x 对应向页面内部生长。
++
++整片叶、花半径和最小茎宽由逻辑像素反算到生成空间；底部茎宽至少为 0.9
++个逻辑像素。绘制区域及缓存边界额外包含花叶外伸，避免在常规宽度边缘硬切。
++
++宿主将植物叠加到实际页面内容中，不预留空白边距，不改变适合宽度、裁剪或
++双页布局。仅左侧和底部从左下角生长；批注和表单矩形会被排除。浅色页面
++使用 Multiply，深色页面使用 Screen；彩色内容可能受到水印染色。
++
++宿主只处理当前页及前后各两页，并按可见区域和脏矩形裁剪。插件再检查条带
++绘制范围，正文中部刷新无需生成边缘植物。
++
++- 矢量 `QPicture` 使用约 8 MiB 的 LRU 缓存。
++- 最终分辨率 `QImage` 使用约 32 MiB 的 LRU 缓存。
++- 缓存键包含种子、植物性状、画风、进度、几何尺寸、像素约束及相关老化条件；
++  图像键另外包含颜色和栅格分辨率。
++- 栅格化考虑设备 DPI 和画笔变换，以两倍分辨率临时渲染后降采样。
++  临时图像限制约 2 百万像素、单边 8192；缓存保存降采样结果。
++
++## 随机稳定性与修改约定
++
++书籍种子在算法开始时确定一个固定的 **8 物种池**：六种基本体型各生成一个物种，
++再随机选择体型生成两个独立物种。体型相同的物种仍有各自的性状种子，
++因此物种身份不能用体型枚举代替。文档开始时以书籍种子洗牌，从池中无重复选取
++**4 个物种**并固定其顺序，整篇文档沿用同一组合：前三个在左侧混生，
++第四个用于底部侧枝。页面不再重新抽取物种。
++
++物种性状与组合由书籍决定，页面种子只改变生长形态和布局；重绘、缩放和改色不会重新抽物种。
++“植物变体”会改变种子。底部侧枝继续遵循不足 10% 隐藏的规则，因此阅读前期
++选中的第四物种暂不显示。三个竖向物种共享候选场和填充预算，不会把密度或
++生成开销直接乘以三。缓存键包含全部三个混生物种的身份。
++
++主轴、分叉性状、花位、叶位和纹理使用独立随机流。相同输入重绘不会重新抽样。
++
++分叉器官阶段会重新建立性状随机流，并跳过几何阶段消耗的两个槽位。
++花朵流也保留历史槽位。重构时不要随意删除这些看似未使用的随机调用，
++否则后续图案会变化。修改几何函数、浮点运算顺序或器官顺序，也可能影响外观。
++
++新增规则时，优先将预算策略放入 `lateralPlan`，将空间容量放在几何测量之后，
++将纹理、混色和缓存留在绘制层。改变分配规则需同时检查零进度、10% 节点、
++最新分叉、三花无叶、两花少叶以及最终末端器官等约束。
++
++## 构建与验证
++
++在已配置的构建目录执行（用实际路径替换 `$BUILD_DIR`）：
++
++```sh
++cmake --build "$BUILD_DIR" --target okularpart okular_floral floralplugintest parttest -j6
++ctest --test-dir "$BUILD_DIR" -R '^floralplugintest$' --output-on-failure
++QT_QPA_PLATFORM=offscreen QT_PLUGIN_PATH="$BUILD_DIR/bin" \
++  "$BUILD_DIR/bin/parttest" \
++  testFloralPageWindow testFloralControls testFloralBorders \
++  testGeneratorPreferences testZoomWithCrop testZoomInFacingPages
++```
++
++`autotests/floralplugintest.cpp` 验证几何、进度分配、容量约束和插件渲染；
++`autotests/parttest.cpp` 验证宿主页窗口、配置、装饰和布局行为。
++纯重构还应对比固定种子、多种进度下的完整茎体/器官数据及渲染图像，保证外观一致。
++
++运行构建版本可使用 `QT_PLUGIN_PATH="$BUILD_DIR/bin" "$BUILD_DIR/bin/okular" --separate`。
++构建不会自动更新系统已安装版本；需要实际部署后，系统入口才会使用新插件。
+diff --git a/plugins/floral/floralplugin.cpp b/plugins/floral/floralplugin.cpp
+new file mode 100644
+index 000000000..4011694a3
+--- /dev/null
++++ b/plugins/floral/floralplugin.cpp
+@@ -0,0 +1,515 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#include "growth.h"
++#include "part/pagedecorationinterface.h"
++#include "species.h"
++
++#include <QCache>
++#include <QPainterPath>
++#include <QPicture>
++#include <QRandomGenerator>
++#include <QtMath>
++#include <algorithm>
++#include <cmath>
++#include <limits>
++#include <memory>
++
++namespace
++{
++constexpr qreal pi = 3.14159265358979323846;
++constexpr int stripWidth = 100;
++constexpr qreal footerFlowerRadiusPixels = 24;
++
++qreal minimumLeafPixels(const Floral::Species &species)
++{
++    return species.leaflets > 1 ? 24 : species.leafShape == Floral::LeafShape::Narrow ? 16 : 12;
++}
++
++QPainterPath leaf(qreal length, qreal width)
++{
++    QPainterPath path;
++    path.cubicTo(width, -length * 0.25, width, -length * 0.7, 0, -length);
++    path.cubicTo(-width, -length * 0.7, -width, -length * 0.25, 0, 0);
++    return path;
++}
++
++// Paint in alpha: the raster cache later tints these washes with the user's ink.
++void wash(QPainter &painter, const QPainterPath &outline, qreal length, qreal width, QRandomGenerator &random, bool veins, Okular::PageDecorationStyle style)
++{
++    painter.save();
++    painter.setClipPath(outline, Qt::IntersectClip);
++    if (style != Okular::PageDecorationStyle::Watercolor) {
++        painter.setPen(style == Okular::PageDecorationStyle::Outline ? QPen(QColor(255, 255, 255, 210), 0.8) : QPen(Qt::NoPen));
++        painter.setBrush(style == Okular::PageDecorationStyle::Silhouette ? QBrush(QColor(255, 255, 255, 190)) : QBrush(Qt::NoBrush));
++        painter.drawPath(outline);
++        if (veins) {
++            painter.setPen(QPen(QColor(255, 255, 255, 150), 0.4));
++            painter.drawLine(QPointF(0, -length * 0.1), QPointF(0, -length * 0.85));
++        }
++        painter.restore();
++        return;
++    }
++    painter.setPen(Qt::NoPen);
++    painter.setBrush(QColor(255, 255, 255, 85));
++    painter.drawPath(outline);
++    for (int i = 0; i < 12; ++i) {
++        const qreal x = (random.generateDouble() * 2 - 1) * width;
++        const qreal y = -random.generateDouble() * length;
++        const qreal radius = length * (0.12 + random.generateDouble() * 0.24);
++        QRadialGradient pigment(QPointF(x, y), radius);
++        pigment.setColorAt(0, QColor(255, 255, 255, 40 + random.bounded(45)));
++        pigment.setColorAt(1, QColor(255, 255, 255, 0));
++        painter.setBrush(pigment);
++        painter.drawEllipse(QPointF(x, y), radius, radius * 0.7);
++    }
++    // A soft pooled edge, with transparent veins lifted out of the pigment.
++    painter.setBrush(Qt::NoBrush);
++    painter.setPen(QPen(QColor(255, 255, 255, 55), 0.7));
++    painter.drawPath(outline);
++    painter.setCompositionMode(QPainter::CompositionMode_DestinationOut);
++    painter.setPen(QPen(QColor(255, 255, 255, 95), 0.45));
++    QPainterPath spine;
++    spine.moveTo(0, -length * 0.08);
++    spine.quadTo(width * 0.08, -length * 0.5, 0, -length * 0.88);
++    painter.drawPath(spine);
++    if (veins) {
++        for (int i = 2; i < 7; ++i) {
++            const qreal y = -length * i / 8;
++            for (int side : {-1, 1}) {
++                QPainterPath vein(QPointF(0, y));
++                vein.quadTo(side * width * 0.4, y - length * 0.06, side * width * 0.65, y - length * 0.14);
++                painter.drawPath(vein);
++            }
++        }
++    }
++    painter.restore();
++}
++
++QPainterPath blade(const Floral::Species &species, qreal length, qreal width)
++{
++    QPainterPath path;
++    path.moveTo(0, 0);
++    // A width envelope defines the species' leaf. Lobes and teeth modulate it;
++    // their amplitude vanishes at the base and tip.
++    auto edge = [&](qreal v) {
++        const qreal envelope = std::pow(std::sin(pi * v), species.leafShape == Floral::LeafShape::Narrow ? 0.8 : 0.65);
++        qreal modulation = species.leafShape == Floral::LeafShape::Lobed ? 0.72 + 0.28 * std::cos(v * 10 * pi) : 1;
++        if (species.toothed) {
++            modulation *= 0.91 + 0.09 * std::cos(v * 28 * pi);
++        }
++        return width * envelope * modulation;
++    };
++    for (int i = 1; i <= 42; ++i) {
++        const qreal v = i / 42.0;
++        path.lineTo(edge(v), -length * v);
++    }
++    for (int i = 41; i >= 0; --i) {
++        const qreal v = i / 42.0;
++        path.lineTo(-edge(v), -length * v);
++    }
++    path.closeSubpath();
++    return path;
++}
++
++void drawBlade(QPainter &painter, const Floral::Species &species, qreal length, QRandomGenerator &pigment, Okular::PageDecorationStyle style)
++{
++    const qreal width = length * species.leafWidth;
++    wash(painter, blade(species, length, width), length, width, pigment, species.veins == Floral::Veins::Pinnate, style);
++    if (species.veins == Floral::Veins::Parallel && style == Okular::PageDecorationStyle::Watercolor) {
++        painter.save();
++        painter.setClipPath(blade(species, length, width), Qt::IntersectClip);
++        painter.setCompositionMode(QPainter::CompositionMode_DestinationOut);
++        painter.setPen(QPen(QColor(255, 255, 255, 90), 0.35));
++        for (int side : {-1, 1}) {
++            QPainterPath vein(QPointF(0, -length * 0.05));
++            vein.cubicTo(side * width * 0.7, -length * 0.3, side * width * 0.7, -length * 0.7, 0, -length * 0.95);
++            painter.drawPath(vein);
++        }
++        painter.restore();
++    }
++}
++
++void drawLeaf(QPainter &painter, const Floral::Species &species, qreal length, QRandomGenerator &pigment, Okular::PageDecorationStyle style)
++{
++    if (species.leaflets == 1) {
++        drawBlade(painter, species, length, pigment, style);
++        return;
++    }
++    painter.save();
++    painter.setPen(QPen(QColor(255, 255, 255, 150), 0.5));
++    painter.drawLine(QPointF(0, 0), QPointF(0, -length * 0.8));
++    const int pairs = (species.leaflets - 1) / 2;
++    for (int i = 0; i < pairs; ++i) {
++        for (int side : {-1, 1}) {
++            painter.save();
++            painter.translate(0, -length * (0.2 + 0.5 * i / pairs));
++            painter.rotate(side * 55);
++            drawBlade(painter, species, length * (0.42 - 0.06 * i), pigment, style);
++            painter.restore();
++        }
++    }
++    painter.translate(0, -length * 0.65);
++    drawBlade(painter, species, length * 0.35, pigment, style);
++    painter.restore();
++}
++
++void drawFlower(QPainter &painter, const Floral::Species &species, qreal radius, QRandomGenerator &pigment, Okular::PageDecorationStyle style)
++{
++    painter.save();
++    if (species.plan == Floral::Plan::Bell) {
++        painter.rotate(180);
++        QPainterPath bell;
++        bell.cubicTo(-radius * 0.2, -radius * 0.1, -radius * 0.25, -radius * 0.7, -radius * 0.55, -radius);
++        for (int i = 0; i < 5; ++i) {
++            const qreal x = -radius * 0.55 + i * radius * 0.22;
++            bell.quadTo(x + radius * 0.11, -radius * 0.8, x + radius * 0.22, -radius);
++        }
++        bell.cubicTo(radius * 0.25, -radius * 0.7, radius * 0.2, -radius * 0.1, 0, 0);
++        wash(painter, bell, radius, radius * 0.55, pigment, false, style);
++    } else {
++        for (int layer = 0; layer < species.layers; ++layer) {
++            const qreal length = radius * (layer == 0 ? 1 : 0.65);
++            const qreal width = length * species.petalWidth;
++            for (int i = 0; i < species.petals; ++i) {
++                painter.save();
++                painter.rotate(i * 360.0 / species.petals + layer * 36 + std::sin(qreal(species.seed % 1024) + i * 1.7 + layer) * 2);
++                wash(painter, leaf(length, width), length, width, pigment, false, style);
++                painter.restore();
++            }
++        }
++        painter.setPen(Qt::NoPen);
++        painter.setBrush(QColor(255, 255, 255, 190));
++        painter.drawEllipse(QPointF(), radius * 0.12, radius * 0.12);
++        if (species.plan == Floral::Plan::Daisy) {
++            for (int i = 0; i < 22; ++i) {
++                const qreal r = radius * 0.24 * std::sqrt(i / 22.0);
++                const qreal angle = i * 2.39996323;
++                painter.drawEllipse(QPointF(r * std::cos(angle), r * std::sin(angle)), radius * 0.035, radius * 0.035);
++            }
++        } else if (species.plan == Floral::Plan::Lily) {
++            painter.setPen(QPen(QColor(255, 255, 255, 200), 0.45));
++            for (int i = 0; i < 6; ++i) {
++                const QPointF tip(radius * 0.28 * std::cos(i * pi / 3), radius * 0.28 * std::sin(i * pi / 3));
++                painter.drawLine(QPointF(), tip);
++                painter.drawEllipse(tip, radius * 0.045, radius * 0.045);
++            }
++        }
++    }
++    painter.restore();
++}
++
++void drawCluster(QPainter &painter, const Floral::Species &species, qreal radius, QRandomGenerator &pigment, Okular::PageDecorationStyle style)
++{
++    if (species.cluster == Floral::Cluster::Single) {
++        drawFlower(painter, species, radius, pigment, style);
++        return;
++    }
++    painter.save();
++    painter.setPen(QPen(QColor(255, 255, 255, 160), 0.55));
++    if (species.cluster == Floral::Cluster::Umbel) {
++        for (int i = 0; i < species.flowers; ++i) {
++            const qreal angle = pi * (0.1 + 0.8 * i / (species.flowers - 1));
++            const QPointF tip(radius * 0.75 * std::cos(angle), -radius * 0.7 * std::sin(angle));
++            painter.drawLine(QPointF(0, radius * 0.35), tip);
++            painter.save();
++            painter.translate(tip);
++            drawFlower(painter, species, radius * (0.16 + 0.08 * (0.5 + 0.5 * std::sin(i * 2.4 + species.seed % 97))), pigment, style);
++            painter.restore();
++        }
++    } else {
++        painter.drawLine(QPointF(0, radius * 0.6), QPointF(0, -radius * 0.65));
++        for (int i = 0; i < species.flowers; ++i) {
++            const qreal y = radius * (0.4 - i * 0.95 / (species.flowers - 1));
++            const QPointF tip((i % 2 ? -1 : 1) * radius * 0.38, y - radius * 0.12);
++            painter.drawLine(QPointF(0, y), tip);
++            painter.save();
++            painter.translate(tip);
++            drawFlower(painter, species, radius * (0.38 - 0.19 * i / (species.flowers - 1)), pigment, style);
++            painter.restore();
++        }
++    }
++    painter.restore();
++}
++
++QPicture *grow(quint32 seed,
++               int density,
++               const Floral::Species &species,
++               Okular::PageDecorationStyle style,
++               qreal height,
++               bool footer,
++               bool overflow,
++               qreal readingProgress,
++               int documentPages,
++               qreal minimumLeafSize,
++               qreal flowerRadius,
++               const Floral::VerticalCommunity *community)
++{
++    Floral::Garden garden = Floral::growGarden(seed, density, species, height, footer, overflow, readingProgress, documentPages, minimumLeafSize, flowerRadius, community);
++    auto *picture = new QPicture;
++    QPainter painter(picture);
++    painter.setRenderHint(QPainter::Antialiasing);
++    QRandomGenerator pigment(seed ^ 0x8a31d5b7U);
++    // Filled tapered strokes preserve the hierarchy from primary shoots to
++    // fine pedicels, instead of drawing every branch with the same pen width.
++    painter.setPen(Qt::NoPen);
++    painter.setBrush(QColor(255, 255, 255, 165));
++    for (const Floral::Stem &stem : garden.stems) {
++        painter.setPen(Qt::NoPen);
++        painter.setBrush(QColor(255, 255, 255, qRound(165 - stem.senescence * 45)));
++        const QRectF bounds = stem.path.boundingRect();
++        const int count = qBound(8, qCeil((bounds.width() + bounds.height()) / 4), 800);
++        QPolygonF left, right;
++        for (int i = 0; i <= count; ++i) {
++            const qreal t = i / qreal(count);
++            const QPointF axis = Floral::tangent(stem.path, t);
++            const QPointF normal(-axis.y(), axis.x());
++            // Keep even juvenile pedicels readable: 0.9 logical pixels at
++            // the page scale, independent of progress and supersampling.
++            const qreal leafPixels = minimumLeafPixels(species);
++            const qreal minimumWidth = footer ? minimumLeafSize / leafPixels * 0.9 : 0;
++            const qreal width = qMax(minimumWidth, stem.baseWidth * (1 - t) + stem.tipWidth * t) / 2;
++            const QPointF point = stem.path.pointAtPercent(t);
++            left.append(point + normal * width);
++            right.append(point - normal * width);
++        }
++        QPainterPath outline;
++        outline.moveTo(left.first());
++        for (int i = 1; i < left.size(); ++i) {
++            outline.lineTo(left[i]);
++        }
++        for (int i = right.size() - 1; i >= 0; --i) {
++            outline.lineTo(right[i]);
++        }
++        outline.closeSubpath();
++        painter.drawPath(outline);
++        if (stem.senescence > 0.2) {
++            painter.setBrush(Qt::NoBrush);
++            painter.setPen(QPen(QColor(255, 255, 255, qRound(stem.senescence * 110)), stem.baseWidth * 0.18, Qt::DashLine, Qt::RoundCap));
++            painter.drawPath(stem.path);
++        }
++    }
++    if (footer) {
++        // Layer foliage first, then buds, then every open flower. Stable order
++        // preserves the composition within a layer even when motifs overlap.
++        std::stable_sort(garden.organs.begin(), garden.organs.end(), [](const Floral::Organ &a, const Floral::Organ &b) {
++            auto layer = [](Floral::OrganKind kind) { return kind == Floral::OrganKind::Leaf ? 0 : kind == Floral::OrganKind::Bud ? 1 : 2; };
++            return layer(a.kind) < layer(b.kind);
++        });
++    }
++    for (const Floral::Organ &organ : garden.organs) {
++        const auto &organSpecies = community && !footer ? (*community)[organ.speciesIndex] : species;
++        painter.save();
++        painter.translate(organ.position);
++        painter.rotate(organ.angle);
++        switch (organ.kind) {
++        case Floral::OrganKind::Leaf:
++            // Curl and narrow older leaves while retaining the configured ink.
++            painter.scale(1 - organ.senescence * 0.6, 1 - organ.senescence * 0.2);
++            painter.setOpacity(1 - organ.senescence * 0.3);
++            drawLeaf(painter, organSpecies, organ.size, pigment, style);
++            break;
++        case Floral::OrganKind::Flower:
++            if (organ.senescence > 0.35) {
++                // A spent flower retains its receptacle and sparse seed stalks.
++                painter.setPen(QPen(QColor(255, 255, 255, 150), 0.45));
++                painter.setBrush(QColor(255, 255, 255, 125));
++                for (int i = 0; i < 7; ++i) {
++                    const qreal angle = i * 2 * pi / 7;
++                    const QPointF tip(std::cos(angle) * organ.size * 0.4, std::sin(angle) * organ.size * 0.4);
++                    painter.drawLine(QPointF(), tip);
++                    painter.drawEllipse(tip, organ.size * 0.055, organ.size * 0.055);
++                }
++                painter.drawEllipse(QPointF(), organ.size * 0.12, organ.size * 0.12);
++            } else {
++                painter.setOpacity(1 - organ.senescence);
++                drawCluster(painter, organSpecies, organ.size, pigment, style);
++            }
++            break;
++        case Floral::OrganKind::Bud:
++            painter.setPen(QPen(QColor(255, 255, 255, 170), 0.45));
++            painter.setBrush(QColor(255, 255, 255, 135));
++            painter.drawEllipse(QRectF(-organ.size * 0.3, -organ.size, organ.size * 0.6, organ.size));
++            break;
++        }
++        painter.restore();
++    }
++    painter.end();
++    return picture;
++}
++}
++
++class FloralPlugin : public QObject, public Okular::PageDecorationInterface
++{
++    Q_OBJECT
++    Q_PLUGIN_METADATA(IID OkularPageDecorationInterface_iid)
++    Q_INTERFACES(Okular::PageDecorationInterface)
++
++public:
++    void paint(QPainter *painter, const QRectF &page, quint32 seed, int density, int width, const QColor &color, quint32 bookSeed, Okular::PageDecorationStyle style) override
++    {
++        const auto plants = Floral::community(bookSeed);
++        const Floral::VerticalCommunity vertical {plants[0], plants[1], plants[2]};
++        painter->save();
++        drawStrip(painter, QRectF(page.left() - width - 4, page.top(), width, page.height()), seed, density, color, plants[0], style, false, false, 1, 0, &vertical);
++        painter->restore();
++        painter->save();
++        painter->translate(page.left(), page.bottom() + 4);
++        painter->rotate(90);
++        drawStrip(painter, QRectF(0, -page.width(), width, page.width()), seed ^ 0x723f49abU, density, color, plants[3], style, true);
++        painter->restore();
++        // Both stems meet outside the lower-left corner; the footer grows right.
++        painter->save();
++        QColor stemColor = color;
++        stemColor.setAlphaF(stemColor.alphaF() * 0.61);
++        painter->setPen(QPen(stemColor, qMax(qreal(0.5), width * 0.012), Qt::SolidLine, Qt::RoundCap));
++        const qreal rootX = page.left() - 4 - width * 0.55;
++        const qreal rootY = page.bottom() + 4 + width * 0.45;
++        QPainterPath corner(QPointF(rootX, page.bottom()));
++        corner.cubicTo(rootX, rootY, rootX, rootY, page.left(), rootY);
++        painter->setBrush(Qt::NoBrush);
++        painter->drawPath(corner);
++        painter->restore();
++    }
++
++    void paintWatermark(QPainter *painter, const QRectF &page, quint32 seed, int density, int width, const QColor &color, quint32 bookSeed, Okular::PageDecorationStyle style, qreal readingProgress, int documentPages) override
++    {
++        painter->save();
++        readingProgress = qBound(qreal(0), readingProgress, qreal(1));
++        const auto plants = Floral::community(bookSeed);
++        const Floral::VerticalCommunity vertical {plants[0], plants[1], plants[2]};
++        const qreal left = qMin(qreal(width), page.width() * 0.3);
++        const qreal bottom = qMin(qreal(width), page.height() * 0.3);
++        if (left >= 10) {
++            drawStrip(painter, QRectF(page.left() + 4, page.top() + 4, left, page.height() - 8), seed, density, color, plants[0], style, false, true, readingProgress, documentPages, &vertical);
++        }
++        if (left >= 10 && bottom >= 10 && page.width() > 24 && readingProgress >= 0.1) {
++            const qreal scale = left / stripWidth;
++            const qreal height = qMin(qreal(3200), (page.height() - 8) / scale);
++            if (height >= 32) {
++                // The lateral shares a selected primary's basal origin, below
++                // the page. Its hidden junction need not form a visible elbow.
++                const auto attachment = Floral::footerAttachment(seed, plants[0], height, 0, &vertical);
++                const qreal rootX = page.left() + 4 + attachment.position.x() * scale;
++                const qreal length = (page.right() - 4 - rootX) * readingProgress;
++                const qreal growthHeight = bottom * readingProgress;
++                painter->save();
++                // Generate at the actual growth length. The geometry generator
++                // shrinks organs near the tip instead of slicing through them.
++                painter->translate(rootX, page.bottom() - growthHeight * 0.9);
++                painter->rotate(90);
++                drawStrip(painter, QRectF(0, -length, growthHeight, length), seed ^ 0x723f49abU, density, color, plants[3], style, true, true, readingProgress, documentPages);
++                painter->restore();
++            }
++        }
++        painter->restore();
++    }
++
++private:
++    void drawStrip(QPainter *painter,
++                   const QRectF &target,
++                   quint32 seed,
++                   int density,
++                   const QColor &color,
++                   const Floral::Species &species,
++                   Okular::PageDecorationStyle style,
++                   bool footer = false,
++                   bool overflow = false,
++                   qreal readingProgress = 1,
++                   int documentPages = 0,
++                   const Floral::VerticalCommunity *community = nullptr)
++    {
++        if (target.width() <= 0 || target.height() <= 0 || (footer && target.height() < 4)) {
++            return;
++        }
++        // A repaint of text in the page center must not generate edge artwork.
++        const qreal leafPixels = minimumLeafPixels(species);
++        const qreal flowerPadding = footerFlowerRadiusPixels * 1.2 + 1;
++        const qreal endPadding = qMax(leafPixels * 2, flowerPadding);
++        const qreal extra = overflow ? (footer ? target.width() * 1.4 + qMax(leafPixels * 2.2, flowerPadding) : target.width() * 0.5) : 0;
++        const QRectF reach = footer ? target.adjusted(-extra, -endPadding, 0, endPadding) : target.adjusted(0, 0, extra, 0);
++        if (painter->hasClipping() && !painter->clipRegion().intersects(reach.toAlignedRect())) {
++            return;
++        }
++        density = qBound(0, density, 100);
++        // Grow in the target's aspect ratio instead of stretching a fixed strip.
++        // Bound generation at extreme zoom; keep the root anchored and let the
++        // upper end stop rather than distorting the organs to fill the page.
++        const qreal height = qMin(qreal(3200), target.height() * stripWidth / target.width());
++        const qreal scale = target.width() / stripWidth;
++        // A leaf remains legible even while the early footer is scaled down.
++        const qreal minimumLeafSize = footer ? leafPixels / scale : 0;
++        // Fixed logical-pixel flower radius: undo strip scaling so growth in
++        // length/height does not also enlarge flowers as progress changes.
++        const qreal flowerRadius = footer ? footerFlowerRadiusPixels / scale : 8;
++        const qreal minimumX = footer && overflow ? -(140 + qMax(minimumLeafSize * 2.2, flowerPadding / scale)) : 0;
++        const qreal rasterWidth = stripWidth - minimumX + (overflow && !footer ? 50 : 0);
++        // Keep complete enlarged leaves at both ends of the cached strip.
++        const qreal minimumY = footer ? -endPadding / scale : 0;
++        const qreal rasterHeight = height - 2 * minimumY;
++        const QRectF destination(target.left() + minimumX * scale, target.bottom() - height * scale + minimumY * scale, rasterWidth * scale, rasterHeight * scale);
++        QString key = QString::number(int(style)) + QLatin1Char('/') + QString::number(int(species.plan)) + QLatin1Char('/') + QString::number(species.seed) + QLatin1Char('/') + QString::number(seed) + QLatin1Char('/') +
++            QString::number(density) + QLatin1Char('/') + QString::number(height, 'g', 17) + QLatin1Char('/') + QString::number(footer) + QLatin1Char('/') + QString::number(overflow) + QLatin1Char('/') +
++            QString::number(readingProgress, 'g', 17) + QLatin1Char('/') + QString::number(!footer && documentPages > 10) + QLatin1Char('/') + QString::number(minimumLeafSize, 'g', 17) + QLatin1Char('/') +
++            QString::number(flowerRadius, 'g', 17);
++        // The mixed community affects both geometry and motifs. Include every
++        // species so another book/subset cannot reuse a partial-community cache.
++        if (community && !footer) {
++            key += QStringLiteral("/community");
++            for (const auto &member : *community) {
++                key += QLatin1Char('/') + QString::number(member.seed) + QLatin1Char('/') + QString::number(int(member.plan));
++            }
++        }
++        // Include both display DPI and painter zoom/rotation in the resolution.
++        // Render at twice the physical resolution so fine veins survive the final
++        // resampling. Keep a uniform scale and a bounded per-entry allocation.
++        const QTransform device = painter->deviceTransform();
++        const qreal deviceScale = qMax(std::hypot(device.m11(), device.m12()), std::hypot(device.m21(), device.m22()));
++        const qreal resolutionLimit = qMin(8192.0 / qMax(rasterWidth, rasterHeight), std::sqrt(2.0 * 1024 * 1024 / (rasterWidth * rasterHeight)));
++        const qreal rasterScale = qMin(scale * deviceScale * 2, resolutionLimit);
++        const QRectF supersampledSource(0, 0, rasterWidth * rasterScale, rasterHeight * rasterScale);
++        const QRectF source(0, 0, supersampledSource.width() / 2, supersampledSource.height() / 2);
++        const QSize size(qMax(1, qCeil(supersampledSource.width())), qMax(1, qCeil(supersampledSource.height())));
++        const QString imageKey = key + QLatin1Char('/') + QString::number(rasterScale, 'g', 17) + QLatin1Char('/') + QString::number(color.rgba());
++        QImage *cached = m_images.object(imageKey);
++        if (!cached) {
++            std::unique_ptr<QPicture> uncachedPicture;
++            QPicture *picture = m_cache.object(key);
++            if (!picture) {
++                uncachedPicture.reset(grow(seed, density, species, style, height, footer, overflow, readingProgress, documentPages, minimumLeafSize, flowerRadius, community));
++                picture = uncachedPicture.get();
++                const int cost = qMax(1, int(picture->size() / 1024) + 1);
++                if (cost <= m_cache.maxCost()) {
++                    m_cache.insert(key, uncachedPicture.release(), cost);
++                }
++            }
++            QImage image(size, QImage::Format_ARGB32_Premultiplied);
++            image.fill(Qt::transparent);
++            QPainter buffer(&image);
++            buffer.scale(rasterScale, rasterScale);
++            buffer.translate(-minimumX, -minimumY);
++            buffer.drawPicture(0, 0, *picture);
++            buffer.resetTransform();
++            buffer.setCompositionMode(QPainter::CompositionMode_SourceIn);
++            buffer.fillRect(image.rect(), color);
++            buffer.end();
++            // Cache the final physical resolution, not the temporary 2x render.
++            // This keeps four times as many page strips in the same LRU budget.
++            QImage resolved(QSize(qMax(1, qCeil(source.width())), qMax(1, qCeil(source.height()))), QImage::Format_ARGB32_Premultiplied);
++            resolved.fill(Qt::transparent);
++            QPainter downsample(&resolved);
++            downsample.setRenderHint(QPainter::SmoothPixmapTransform);
++            downsample.drawImage(source, image, supersampledSource);
++            downsample.end();
++            cached = new QImage(std::move(resolved));
++            m_images.insert(imageKey, cached, qMax(1, int(cached->sizeInBytes() / 1024)));
++        }
++        painter->save();
++        painter->setRenderHint(QPainter::SmoothPixmapTransform);
++        painter->drawImage(destination, *cached, source);
++        painter->restore();
++    }
++
++    QCache<QString, QPicture> m_cache {8192};
++    QCache<QString, QImage> m_images {32768};
++};
++
++#include "floralplugin.moc"
+diff --git a/plugins/floral/geometry.h b/plugins/floral/geometry.h
+new file mode 100644
+index 000000000..2d312a0c8
+--- /dev/null
++++ b/plugins/floral/geometry.h
+@@ -0,0 +1,242 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef OKULAR_FLORAL_GEOMETRY_H
++#define OKULAR_FLORAL_GEOMETRY_H
++
++#include "species.h"
++#include <QPainterPath>
++#include <QPointF>
++#include <QtMath>
++#include <algorithm>
++#include <cmath>
++
++namespace Floral
++{
++enum class OrganKind { Leaf, Flower, Bud };
++struct Organ {
++    OrganKind kind;
++    QPointF position;
++    qreal angle;
++    qreal size;
++    qreal senescence = 0;
++    int stem = -1;        // Owning stem in Garden::stems.
++    int speciesIndex = 0; // Index within the vertical community, or zero for a single species.
++};
++struct Stem {
++    QPainterPath path;
++    qreal baseWidth;
++    qreal tipWidth;
++    int parent; // -1 for a primary shoot; otherwise an index into Garden::stems.
++    int depth;
++    qreal parentPosition;
++    qreal senescence = 0;
++    int speciesIndex = 0;
++};
++struct Garden {
++    QList<Stem> stems;
++    QList<Organ> organs;
++};
++inline qreal separation(QPointF a, QPointF b)
++{
++    const QPointF delta = a - b;
++    return std::sqrt(QPointF::dotProduct(delta, delta));
++}
++inline QPointF direction(QPointF vector)
++{
++    const qreal length = separation(vector, {});
++    return length > 0.00001 ? vector / length : QPointF(0, -1);
++}
++inline QPointF endDirection(const QPainterPath &path)
++{
++    const QPointF end = path.currentPosition();
++    // The final Bezier control point defines the exact outgoing derivative.
++    // Fall back through coincident controls for a degenerate endpoint.
++    for (int i = path.elementCount() - 2; i >= 0; --i) {
++        const auto control = path.elementAt(i);
++        const QPointF delta = end - QPointF(control.x, control.y);
++        if (separation(delta, {}) > 0.00001) {
++            return direction(delta);
++        }
++    }
++    return QPointF(0, -1);
++}
++
++inline QPointF tangent(const QPainterPath &path, qreal t)
++{
++    return direction(path.pointAtPercent(qMin(qreal(1), t + 0.001)) - path.pointAtPercent(qMax(qreal(0), t - 0.001)));
++}
++inline QPointF limitDirection(QPointF wanted, QPointF axis, qreal maximumAngle)
++{
++    axis = direction(axis);
++    wanted = direction(wanted);
++    const qreal angle = qBound(-maximumAngle, std::atan2(axis.x() * wanted.y() - axis.y() * wanted.x(), QPointF::dotProduct(axis, wanted)), maximumAngle);
++    return QPointF(axis.x() * std::cos(angle) - axis.y() * std::sin(angle), axis.x() * std::sin(angle) + axis.y() * std::cos(angle));
++}
++
++inline qreal degrees(QPointF axis)
++{
++    return std::atan2(axis.x(), -axis.y()) * 180 / 3.14159265358979323846;
++}
++
++// Length envelope follows attachment order along the stem, including curled tips.
++inline qreal lateralLengthLimit(qreal growthPosition, int parentDepth)
++{
++    const qreal remaining = 1 - qBound(qreal(0), growthPosition, qreal(1));
++    return (22 + 95 * std::pow(remaining, 0.9)) * std::pow(0.8, parentDepth);
++}
++
++inline int primaryCount(quint32 seed)
++{
++    QRandomGenerator random(seed ^ 0x35d7e8a1U);
++    return 1 + random.bounded(3);
++}
++struct Shoot {
++    Stem stem;
++    qreal flower;
++};
++// Isolated stream: attachment queries can reproduce just a primary curve,
++// without generating the leaf field or consuming the composition's RNG.
++inline Shoot primaryShoot(quint32 seed, const Species &species, qreal height, int shoot, int count, bool footer = false, qreal readingProgress = 1)
++{
++    QRandomGenerator random(seed ^ (quint32(shoot + 1) * 0x9e3779b9U));
++    auto unit = [&] { return random.generateDouble(); };
++    const qreal fraction = shoot == 0 ? 1 : shoot == 1 ? 0.66 + unit() * 0.06 : 0.38 + unit() * 0.07;
++    const qreal flower = qMin(height * 0.16, (shoot == 0 ? 25 + unit() * 5 : shoot == 1 ? 15 + unit() * 5 : 9 + unit() * 5));
++    const qreal length = footer ? height : qMax(qreal(8), height * fraction - flower - 5);
++    const qreal phase = unit() * 6.283185307179586;
++    const qreal spread = shoot == 0 ? 0 : shoot == 1 ? -20 : 21;
++    auto point = [&](qreal d) {
++        if (footer) {
++            // Begin below the visible page, then rise in one broad, smooth bend.
++            // Low-frequency sway avoids a kink at a forced visible junction.
++            const qreal t = qBound(qreal(0), d / 150, qreal(1));
++            const qreal ease = t * t * (3 - 2 * t);
++            const qreal sway = species.stemSway * 0.25 * std::sin(d / 190 + phase) + 1.5 * std::sin(d / 95 + phase);
++            const qreal maturity = qBound(qreal(0), (height - d) / height, qreal(1));
++            // Keep the basal stretch calm, then allow a broad, rising sweep.
++            const qreal stretch = qBound(qreal(0), (d / height - 0.2) / 0.8, qreal(1));
++            const qreal rise = stretch * stretch * (3 - 2 * stretch);
++            const qreal progress = qBound(qreal(0), readingProgress, qreal(1));
++            const qreal tipZone = qBound(qreal(0), (d / height - 0.85) / 0.15, qreal(1));
++            const qreal boundedLift = 35 + 30 * tipZone * tipZone * (3 - 2 * tipZone);
++            const qreal lift = (progress > 0.3 ? boundedLift : 100 + 30 * std::sin(phase)) * rise;
++            // A broad middle dip interrupts the upward sweep without changing
++            // the basal entry or terminal height. Zero endpoint slopes keep it calm.
++            const qreal dipPosition = qBound(qreal(0), (d / height - 0.28) / 0.48, qreal(1));
++            const qreal dipWave = std::sin(dipPosition * 3.14159265358979323846);
++            const qreal dip = (18 + 3 * std::sin(phase)) * dipWave * dipWave;
++            const qreal visibleAxis = 90 - 45 * maturity + sway * maturity - lift + dip;
++            QPointF position(120 * (1 - ease) + visibleAxis * ease, height - d);
++            const qreal curlLength = qMin(height * (0.34 + 0.04 * std::sin(phase)), qreal(150));
++            const qreal curlAngle = std::pow(1 - qBound(qreal(0), readingProgress, qreal(1)), 1.15) * (1.12 + 0.08 * std::sin(phase)) * 3.14159265358979323846;
++            if (curlAngle > 0.0001 && d > height - curlLength) {
++                const qreal s = qMax(qreal(0), (d - height + curlLength) / curlLength);
++                // Integrate a gradually turning tangent instead of attaching a
++                // constant-radius circle. Curvature starts at zero and tightens
++                // towards the growing tip, with modest seed-dependent variation.
++                QPointF displacement;
++                constexpr int steps = 24;
++                for (int j = 0; j < steps; ++j) {
++                    const qreal u = s * (j + 0.5) / steps;
++                    const qreal angle = curlAngle * u * u;
++                    displacement += QPointF(-std::sin(angle), 1 - std::cos(angle));
++                }
++                position += displacement * (curlLength * s / steps);
++            }
++            if (progress > 0.3) {
++                // A soft bound bends the axis back into its height envelope;
++                // it does not clip or constrain attached organs and branches.
++                const qreal minimumX = 2 - 8 * tipZone * tipZone * (3 - 2 * tipZone);
++                const qreal delta = position.x() - minimumX;
++                position.setX(minimumX + (delta + std::sqrt(delta * delta + 16)) * 0.5);
++            }
++            return position;
++        }
++        const qreal fade = 1 - std::exp(-d / 55);
++        const qreal sway = species.stemSway * 0.65 * std::sin(d / (80 + shoot * 17) + phase) + 4 * std::sin(d / 37 + phase);
++        return QPointF(45 + fade * (spread + sway), height - d);
++    };
++    auto slope = [&](qreal d) { return (point(d + 0.1) - point(d - 0.1)) / 0.2; };
++    QPainterPath path(point(0));
++    const int segments = qMax(1, qCeil(length / 24));
++    for (int i = 0; i < segments; ++i) {
++        const qreal start = length * i / segments;
++        const qreal end = length * (i + 1) / segments;
++        const qreal handle = (end - start) / 3;
++        path.cubicTo(point(start) + slope(start) * handle, point(end) - slope(end) * handle, point(end));
++    }
++    // Fewer primary shoots carry more visual weight. The footer is a finer
++    // lateral, never another fan of independent primary shoots.
++    const qreal base = footer ? 0.65 : (2.6 - count * 0.35) * (shoot == 0 ? 1 : 0.8);
++    return {{path, base, footer ? 0 : 0.35, -1, 0, 0}, flower};
++}
++struct FooterAttachment {
++    int parent;
++    qreal t;
++    QPointF position;
++    QPointF axis;
++};
++inline FooterAttachment footerAttachment(quint32 seed, const Species &species, qreal height, qreal clearance, const VerticalCommunity *community = nullptr)
++{
++    const int count = community ? int(community->size()) : primaryCount(seed);
++    QRandomGenerator random(seed ^ 0x1c2d379bU);
++    const int parent = random.bounded(count);
++    const Stem stem = primaryShoot(seed, community ? (*community)[parent] : species, height, parent, count).stem;
++    const qreal length = height - stem.path.currentPosition().y();
++    const qreal t = qMin(qreal(0.8), clearance / length);
++    return {parent, t, stem.path.pointAtPercent(t), tangent(stem.path, t)};
++}
++
++// The entire footer tapers from its basal origin to the growing tip. There
++// is no full-sized plateau followed by a separate terminal shrinking zone.
++inline qreal tipMaturity(qreal distanceToTip, qreal height)
++{
++    return height > 0 ? qBound(qreal(0), distanceToTip / height, qreal(1)) : 0;
++}
++
++// Sparse, smooth pockets of extra space. The nominal width stays 100; only
++// selected local stretches can grow into the page, never the whole border.
++struct GrowthEnvelope {
++    struct Bulge {
++        qreal center;
++        qreal halfLength;
++        qreal reach;
++    };
++    QList<Bulge> bulges;
++    bool footer;
++    qreal height;
++    qreal extra(qreal y) const
++    {
++        qreal amount = 0;
++        for (const auto &bulge : bulges) {
++            const qreal t = std::abs(y - bulge.center) / bulge.halfLength;
++            if (t < 1) {
++                amount = qMax(amount, bulge.reach * (1 + std::cos(t * 3.14159265358979323846)) / 2);
++            }
++        }
++        return amount;
++    }
++    qreal left(qreal y) const
++    {
++        const qreal travel = 1 - tipMaturity(y, height);
++        return footer ? 2 - 130 * travel * travel * (3 - 2 * travel) - extra(y) : 2;
++    }
++    qreal right(qreal y) const
++    {
++        return footer ? 90 + 8 * tipMaturity(y, height) : 98 + extra(y);
++    }
++};
++inline GrowthEnvelope growthEnvelope(quint32 seed, qreal height, bool footer, bool enabled = true)
++{
++    GrowthEnvelope envelope {{}, footer, height};
++    QRandomGenerator random(seed ^ 0x86de17a3U);
++    if (enabled && height >= 100 && random.generateDouble() < 0.7) {
++        const int count = qBound(1, int(height / 450), 3);
++        for (int i = 0; i < count; ++i) {
++            envelope.bulges.append({height * (i + 0.3 + random.generateDouble() * 0.4) / count, qMin(height * 0.16, 55 + random.generateDouble() * 45), 32 + random.generateDouble() * 16});
++        }
++    }
++    return envelope;
++}
++
++}
++#endif
+diff --git a/plugins/floral/growth.h b/plugins/floral/growth.h
+new file mode 100644
+index 000000000..0dce961f9
+--- /dev/null
++++ b/plugins/floral/growth.h
+@@ -0,0 +1,264 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef OKULAR_FLORAL_GROWTH_H
++#define OKULAR_FLORAL_GROWTH_H
++
++#include "lateral.h"
++
++namespace Floral
++{
++// A stable rank lets reproductive sites change stage progressively while
++// retaining the same stems, attachment points and species on repeated paints.
++inline void applySeason(Garden &garden, quint32 seed, qreal progress)
++{
++    QRandomGenerator stages(seed ^ 0x6e7329b5U);
++    const qreal buds = qBound(qreal(0), (progress - 0.2) / 0.2, qreal(1));
++    const qreal bloom = qBound(qreal(0), (progress - 0.4) / 0.6, qreal(1));
++    for (Organ &organ : garden.organs) {
++        const qreal rank = stages.generateDouble();
++        if (organ.kind == OrganKind::Leaf) {
++            continue;
++        }
++        const bool wasFlower = organ.kind == OrganKind::Flower;
++        if (progress <= 0.2 || (progress <= 0.4 && rank >= buds)) {
++            organ.kind = OrganKind::Leaf;
++            organ.size *= wasFlower ? 0.7 : 1.4;
++        } else if (wasFlower && rank < bloom) {
++            organ.kind = OrganKind::Flower;
++            organ.size *= 0.7 + 0.3 * bloom;
++        } else {
++            organ.kind = OrganKind::Bud;
++            organ.size *= wasFlower ? 0.7 : 1;
++        }
++    }
++}
++
++inline void applySenescence(Garden &garden, quint32 seed, qreal progress, int pages, bool footer)
++{
++    if (pages <= 10 || progress <= 0.8 || footer) {
++        return;
++    }
++    const qreal age = qBound(qreal(0), (progress - 0.8) / 0.2, qreal(1));
++    QRandomGenerator aging(seed ^ 0x4d3cbe71U);
++    // Stable ranks expose only part of the plant to aging, increasingly after
++    // 80%. Repainting cannot resample affected sites or move attachment points.
++    for (Stem &stem : garden.stems) {
++        const qreal rank = aging.generateDouble();
++        stem.senescence = qMax(qreal(0), age - rank / 0.65);
++    }
++    for (Organ &organ : garden.organs) {
++        const qreal rank = aging.generateDouble();
++        organ.senescence = qMax(qreal(0), age - rank / 0.6);
++        if (organ.senescence > 0) {
++            organ.angle += (organ.angle < 0 ? -1 : 1) * organ.senescence * 55;
++        }
++    }
++}
++
++// Geometry is independent of paint style/texture. Its discs describe available
++// space, not a fixed menu of organ sizes: large holes are filled before small.
++inline Garden growGarden(quint32 seed,
++                         int density,
++                         const Species &species,
++                         qreal height,
++                         bool footer = false,
++                         bool overflow = true,
++                         qreal readingProgress = 1,
++                         int documentPages = 0,
++                         qreal minimumLeafSize = 0,
++                         qreal flowerRadius = 8,
++                         const VerticalCommunity *community = nullptr)
++{
++    Garden garden;
++    if (height < 32) {
++        return garden;
++    }
++    if (footer) {
++        return growReadingLateral(seed, density, species, height, readingProgress, minimumLeafSize, flowerRadius);
++    }
++    readingProgress = qBound(qreal(0), readingProgress, qreal(1));
++    const auto envelope = growthEnvelope(seed, height, false, overflow);
++    QRandomGenerator random(seed);
++    auto unit = [&] { return random.generateDouble(); };
++    struct Disc {
++        QPointF center;
++        qreal radius;
++    };
++    struct Sample {
++        QPointF position;
++        QPointF axis;
++        qreal width;
++        int stem;
++        int depth;
++        qreal t;
++    };
++    QList<Disc> occupied;
++    QList<Sample> samples;
++    auto reserve = [&](QPointF center, qreal radius) { occupied.append({center, radius * 0.85}); };
++    auto room = [&](QPointF center, qreal radius) {
++        if (center.x() - radius < envelope.left(center.y()) || center.x() + radius > envelope.right(center.y()) || center.y() - radius < 2 || center.y() + radius > height - 2) {
++            return false;
++        }
++        for (const Disc &disc : occupied) {
++            if (std::abs(center.y() - disc.center.y()) < radius + disc.radius && separation(center, disc.center) < radius + disc.radius) {
++                return false;
++            }
++        }
++        return true;
++    };
++    auto addSamples = [&](int index, int count) {
++        const Stem &stem = garden.stems[index];
++        for (int i = 0; i <= count; ++i) {
++            const qreal t = i / qreal(count);
++            samples.append({stem.path.pointAtPercent(t), tangent(stem.path, t), stem.baseWidth * (1 - t) + stem.tipWidth * t, index, stem.depth, t});
++        }
++    };
++    // One primary per selected species; all share the same occupancy field.
++    const int count = community ? int(community->size()) : primaryCount(seed);
++    for (int shoot = 0; shoot < count; ++shoot) {
++        const auto &shootSpecies = community ? (*community)[shoot] : species;
++        const int speciesIndex = community ? shoot : 0;
++        Shoot primary = primaryShoot(seed, shootSpecies, height, shoot, count);
++        primary.stem.speciesIndex = speciesIndex;
++        const QPainterPath &path = primary.stem.path;
++        garden.stems.append(primary.stem);
++        const qreal length = height - path.currentPosition().y();
++        addSamples(shoot, qMax(2, qCeil(length / 8)));
++        const QPointF tip = path.currentPosition();
++        const qreal radius = qMin(primary.flower, qMin(tip.x() - 3, 97 - tip.x()));
++        if (room(tip, radius * 0.8)) {
++            garden.organs.append({OrganKind::Flower, tip, degrees(tangent(path, 1)) + (unit() - 0.5) * 18, radius, 0, shoot, speciesIndex});
++            reserve(tip, radius);
++        }
++    }
++    for (int shoot = 0; shoot < count; ++shoot) {
++        const int speciesIndex = garden.stems[shoot].speciesIndex;
++        const auto &shootSpecies = community ? (*community)[speciesIndex] : species;
++        const QPainterPath &path = garden.stems[shoot].path;
++        const qreal length = height - path.currentPosition().y();
++        const qreal gap = shootSpecies.nodeGap * (1.9 - qBound(0, density, 100) / 150.0);
++        int node = 0;
++        for (qreal d = 28 + unit() * 12; d < length - 26; d += gap * (0.65 + unit() * 0.8), ++node) {
++            // Leave breathing room between groups rather than a regular ladder.
++            if (unit() < 0.15) {
++                continue;
++            }
++            const qreal t = d / length;
++            const QPointF origin = path.pointAtPercent(t);
++            const qreal stemAngle = degrees(tangent(path, t));
++            const int leaves = shootSpecies.arrangement == Arrangement::Opposite ? 2 : shootSpecies.arrangement == Arrangement::Whorled ? 3 : 1;
++            for (int i = 0; i < leaves; ++i) {
++                const int side = leaves == 1 ? (node % 2 ? -1 : 1) : (i % 2 ? -1 : 1);
++                const qreal angle = stemAngle + side * (shootSpecies.leafAngle + (unit() - 0.5) * 22);
++                const qreal size = (10 + 25 * std::pow(unit(), 0.7)) * (0.45 + 0.55 * std::sin(3.14159265358979323846 * (0.1 + 0.85 * t))) * (shoot == 0 ? 1 : 0.8);
++                const qreal radians = angle * 3.14159265358979323846 / 180;
++                const QPointF axis(std::sin(radians), -std::cos(radians));
++                const QPointF center = origin + axis * size * 0.5;
++                const qreal radius = size * (shootSpecies.leaflets > 1 ? 0.4 : qMax(qreal(0.25), shootSpecies.leafWidth));
++                if (size >= 0.6 && room(center, radius)) {
++                    garden.organs.append({OrganKind::Leaf, origin, angle, size, 0, shoot, speciesIndex});
++                    reserve(center, radius);
++                }
++            }
++        }
++    }
++    std::sort(occupied.begin(), occupied.end(), [](const Disc &a, const Disc &b) { return a.center.y() < b.center.y(); });
++    std::sort(samples.begin(), samples.end(), [](const Sample &a, const Sample &b) { return a.position.y() < b.position.y(); });
++    qreal maxRadius = 0;
++    for (const Disc &disc : occupied) {
++        maxRadius = qMax(maxRadius, disc.radius);
++    }
++    struct Cell {
++        QPointF center;
++        qreal free;
++        qreal nearest;
++        Sample source;
++    };
++    QList<Cell> field;
++    for (int y = 10; y < height - 8; y += 8) {
++        for (int x = 8; x <= (overflow ? 136 : 96); x += 8) {
++            Cell cell {QPointF(x, y), qMin(qMin(x - envelope.left(y), envelope.right(y) - x), qMin(qreal(y - 2), height - y - 2)), 55, {}};
++            if (cell.free <= 0) {
++                continue;
++            }
++            const qreal reach = cell.free + maxRadius;
++            auto disc = std::lower_bound(occupied.cbegin(), occupied.cend(), y - reach, [](const Disc &a, qreal low) { return a.center.y() < low; });
++            for (; disc != occupied.cend() && disc->center.y() < y + reach; ++disc) {
++                cell.free = qMin(cell.free, separation(cell.center, disc->center) - disc->radius);
++            }
++            auto sample = std::lower_bound(samples.cbegin(), samples.cend(), y - 55, [](const Sample &a, qreal low) { return a.position.y() < low; });
++            for (; sample != samples.cend() && sample->position.y() <= y + 55; ++sample) {
++                const qreal distance = separation(cell.center, sample->position);
++                if (distance < cell.nearest) {
++                    cell.nearest = distance;
++                    cell.source = *sample;
++                }
++            }
++            field.append(cell);
++        }
++    }
++    const int attempts = qCeil((12 + qBound(0, density, 100) * 65 / 100) * height / 800);
++    for (int step = 0; step < attempts; ++step) {
++        int chosen = -1;
++        qreal best = 0;
++        for (int i = 0; i < field.size(); ++i) {
++            const Cell &cell = field[i];
++            if (cell.free >= 3.6 && cell.nearest < 55 && cell.source.depth < 3) {
++                const qreal score = cell.free * (0.92 + unit() * 0.16);
++                if (score > best) {
++                    best = score;
++                    chosen = i;
++                }
++            }
++        }
++        if (chosen < 0) {
++            break;
++        }
++        const Cell cell = field[chosen];
++        const qreal radius = cell.free * (0.82 + unit() * 0.08);
++        if (radius < 0.5) {
++            field[chosen].free = 0;
++            continue;
++        }
++        const int speciesIndex = garden.stems[cell.source.stem].speciesIndex;
++        const auto &shootSpecies = community ? (*community)[speciesIndex] : species;
++        const bool flower = radius > 12 && (radius > 22 || unit() < shootSpecies.flowerWeight);
++        const OrganKind kind = flower ? OrganKind::Flower : radius > 5.5 ? OrganKind::Leaf : OrganKind::Bud;
++        const qreal size = kind == OrganKind::Leaf ? radius * 1.65 : radius;
++        QPointF axis = direction(QPointF((cell.center.x() - cell.source.position.x()) * 0.7, -qMax(qreal(8), std::abs(cell.center.y() - cell.source.position.y()) * 0.4)));
++        const QPointF anchor = cell.center - (kind == OrganKind::Leaf ? axis * size * 0.45 : QPointF());
++        const qreal distance = separation(anchor, cell.source.position);
++        const qreal handle = qBound(qreal(4), distance * 0.45, qreal(28));
++        QPainterPath branch(cell.source.position);
++        branch.cubicTo(cell.source.position + cell.source.axis * handle, anchor - axis * handle, anchor);
++        const qreal base = cell.source.width * 0.75;
++        const int index = garden.stems.size();
++        garden.stems.append({branch, base, qMin(base * 0.45, qreal(0.25)), cell.source.stem, cell.source.depth + 1, cell.source.t, 0, speciesIndex});
++        garden.organs.append({kind, anchor, degrees(axis), size, 0, index, speciesIndex});
++        QList<Sample> newSamples;
++        if (cell.source.depth < 2) {
++            for (int i = 1; i <= 6; ++i) {
++                const qreal t = i / 6.0;
++                newSamples.append({branch.pointAtPercent(t), tangent(branch, t), base * (1 - t) + qMin(base * 0.45, qreal(0.25)) * t, index, cell.source.depth + 1, t});
++            }
++        }
++        for (Cell &candidate : field) {
++            if (std::abs(candidate.center.y() - cell.center.y()) < candidate.free + radius) {
++                candidate.free = qMin(candidate.free, separation(candidate.center, cell.center) - radius * 0.85);
++            }
++            for (const Sample &sample : newSamples) {
++                if (std::abs(candidate.center.y() - sample.position.y()) < candidate.nearest) {
++                    const qreal distance = separation(candidate.center, sample.position);
++                    if (distance < candidate.nearest) {
++                        candidate.nearest = distance;
++                        candidate.source = sample;
++                    }
++                }
++            }
++        }
++    }
++    applySeason(garden, seed, readingProgress);
++    applySenescence(garden, seed, readingProgress, documentPages, false);
++    return garden;
++}
++}
++#endif
+diff --git a/plugins/floral/lateral.h b/plugins/floral/lateral.h
+new file mode 100644
+index 000000000..703079b6a
+--- /dev/null
++++ b/plugins/floral/lateral.h
+@@ -0,0 +1,230 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef OKULAR_FLORAL_LATERAL_H
++#define OKULAR_FLORAL_LATERAL_H
++
++#include "geometry.h"
++
++namespace Floral
++{
++inline qreal terminalFlowerRadius(qreal progress)
++{
++    return 1.5 + 6 * qBound(qreal(0), progress, qreal(1));
++}
++
++// Weighted priority gives the main axis and older shoots more foliage. Any
++// eligible uncovered stem receives a fallback leaf within its capacity.
++inline QList<int> allocateLateralLeaves(int budget, const QList<qreal> &weights, const QList<int> &capacities = {})
++{
++    QList<int> counts(weights.size(), 0);
++    for (int leaf = 0; leaf < budget; ++leaf) {
++        int chosen = -1;
++        qreal priority = -1;
++        for (int stem = 0; stem < weights.size(); ++stem) {
++            if (!capacities.isEmpty() && counts[stem] >= capacities[stem]) {
++                continue;
++            }
++            const qreal score = weights[stem] / (counts[stem] + 1);
++            if (score > priority) {
++                priority = score;
++                chosen = stem;
++            }
++        }
++        if (chosen < 0) {
++            break;
++        }
++        ++counts[chosen];
++    }
++    for (int stem = 0; stem < counts.size(); ++stem) {
++        if (capacities.isEmpty() || capacities[stem] > 0) {
++            counts[stem] = qMax(1, counts[stem]);
++        }
++    }
++    return counts;
++}
++
++// Progress budgets are separate from spatial capacity: a full stem cannot
++// receive more foliage merely because the document has a larger leaf budget.
++struct LateralPlan {
++    int branches;
++    int axisFlowers;
++    int leafBudget;
++    std::array<int, 10> flowerCounts {};
++    QList<qreal> leafWeights;
++};
++
++inline LateralPlan lateralPlan(qreal progress)
++{
++    LateralPlan plan;
++    plan.branches = qMin(10, int(std::floor(progress * 10 + 1e-9)));
++    // Allocate each milestone's flower budget by priority: main axis first,
++    // then older branches, at most three per stem. The newest gets none.
++    plan.axisFlowers = qMin(3, plan.branches);
++    int remainingFlowers = plan.branches - plan.axisFlowers;
++    for (int node = 0; node < plan.branches - 1 && remainingFlowers > 0; ++node) {
++        const qreal age = qBound(qreal(0), (progress - (node + 1) / 10.0) / 0.35, qreal(1));
++        const int capacity = 1 + int(std::floor(age * 2 + 1e-9));
++        plan.flowerCounts[node] = qMin(capacity, remainingFlowers);
++        remainingFlowers -= plan.flowerCounts[node];
++    }
++    plan.leafBudget = int(std::floor(progress * 100 + 1e-9));
++    plan.leafWeights = {1.5};
++    for (int node = 0; node < plan.branches; ++node) {
++        const qreal age = qBound(qreal(0), (progress - (node + 1) / 10.0) / 0.35, qreal(1));
++        plan.leafWeights.append((0.2 + 0.8 * age) * (1 - 0.5 * node / (plan.branches + 1)));
++    }
++    return plan;
++}
++
++struct LateralBranchStats {
++    qreal age;
++    qreal t;
++    qreal tipLeaf;
++    qreal basalLeaf;
++};
++
++// Each ten-percent milestone adds exactly one branch. Independent per-node
++// random streams preserve its traits as existing branches continue to mature.
++inline Garden growReadingLateral(quint32 seed, int /*density*/, const Species &species, qreal height, qreal progress, qreal minimumLeafSize, qreal flowerRadius = 8)
++{
++    Garden garden;
++    progress = qBound(qreal(0), progress, qreal(1));
++    if (progress < 0.1) {
++        return garden;
++    }
++    const qreal leafFloor = qMax(minimumLeafSize, 2 + 6 * progress);
++    const Stem primary = primaryShoot(seed, species, height, 0, 1, true, progress).stem;
++    garden.stems.append(primary);
++    garden.organs.append({OrganKind::Leaf, primary.path.currentPosition(), degrees(endDirection(primary.path)), leafFloor, 0, 0});
++    const auto plan = lateralPlan(progress);
++    const int branches = plan.branches;
++    const auto &flowerCounts = plan.flowerCounts;
++    const qreal axisLength = primary.path.length();
++    QList<qreal> branchDistances;
++    QList<qreal> branchLeafSizes;
++    QList<LateralBranchStats> branchStats;
++    QList<int> leafCapacities {1};
++    auto nodePosition = [&](int node) {
++        // Include one virtual, not-yet-developed node beyond the last branch.
++        // Its interval continues the same exponential spacing progression.
++        const qreal fraction = (node + 0.5) / (10 * qMax(qreal(0.1), progress));
++        constexpr qreal spacingTaper = 2.4;
++        return 0.12 + 0.76 * -std::expm1(-spacingTaper * fraction) / -std::expm1(-spacingTaper);
++    };
++    // Phase 1: construct branches and measure their spatial leaf capacities.
++    const qreal terminalPosition = nodePosition(branches);
++    for (int node = 0; node < branches; ++node) {
++        QRandomGenerator traits(seed ^ (quint32(node + 1) * 0x5bd1e995U));
++        auto unit = [&] { return traits.generateDouble(); };
++        const qreal birth = (node + 1) / 10.0;
++        const qreal age = qBound(qreal(0), (progress - birth) / 0.35, qreal(1));
++        // The axis ends at the virtual next node, leaving only its expected
++        // interval after the last developed branch instead of a fixed bare tail.
++        const qreal distance = axisLength * nodePosition(node) / terminalPosition;
++        const qreal t = primary.path.percentAtLength(distance);
++        branchDistances.append(distance);
++        const QPointF origin = primary.path.pointAtPercent(t);
++        const QPointF parentAxis = tangent(primary.path, t);
++        const qreal angle = qDegreesToRadians(32 + unit() * 32) * (node % 4 == 2 ? 1 : -1);
++        const QPointF chord(parentAxis.x() * std::cos(angle) - parentAxis.y() * std::sin(angle), parentAxis.x() * std::sin(angle) + parentAxis.y() * std::cos(angle));
++        const qreal length = lateralLengthLimit(t, 0) * 0.96 * (0.35 + 0.65 * age) * (0.7 + 0.3 * progress);
++        const QPointF end = origin + chord * length;
++        const qreal bend = qDegreesToRadians((unit() - 0.5) * 18);
++        const QPointF arrival(chord.x() * std::cos(bend) - chord.y() * std::sin(bend), chord.x() * std::sin(bend) + chord.y() * std::cos(bend));
++        QPainterPath branch(origin);
++        branch.cubicTo(origin + limitDirection(parentAxis, chord, qDegreesToRadians(qreal(20))) * length / 3, end - arrival * length / 3, end);
++        const qreal width = primary.baseWidth * (1 - t) * 0.75;
++        garden.stems.append({branch, width, width * 0.35, 0, 1, t});
++        const qreal tipLeaf = leafFloor + 5 * age * (1 - t);
++        const qreal basalLeaf = 2 * (leafFloor + (5 + 12 * age) * (1 - t) * (1 - 0.55 * 0.28));
++        branchStats.append({age, t, tipLeaf, basalLeaf});
++        const int flowers = flowerCounts[node];
++        const qreal spacing = qMax(qreal(6), basalLeaf * 0.4);
++        const int spatialCapacity = qMax(1, 1 + int(branch.length() * (flowers > 0 ? 0.6 : 0.84) / spacing));
++        leafCapacities.append(flowers >= 3 ? 0 : flowers == 2 ? qMin(2, spatialCapacity) : spatialCapacity);
++    }
++    qreal largestLeaf = leafFloor;
++    for (int node = 0; node < branches; ++node) {
++        if (leafCapacities[node + 1] > 0) {
++            largestLeaf = qMax(largestLeaf, branchStats[node].basalLeaf);
++        }
++    }
++    leafCapacities[0] = 1 + int(axisLength * 0.84 / qMax(qreal(6), largestLeaf * 0.4));
++    // Phase 2: distribute foliage only after every stem capacity is known.
++    const QList<int> leafCounts = allocateLateralLeaves(plan.leafBudget, plan.leafWeights, leafCapacities);
++    for (int node = 0; node < branches; ++node) {
++        const int index = node + 1;
++        const auto &branch = garden.stems[index].path;
++        const auto &stats = branchStats[node];
++        const qreal age = stats.age;
++        const qreal t = stats.t;
++        const QPointF end = branch.currentPosition();
++        const int flowers = flowerCounts[node];
++        const qreal terminalLeafSize = stats.tipLeaf;
++        QRandomGenerator traits(seed ^ (quint32(node + 1) * 0x5bd1e995U));
++        // Geometry consumes the first two trait slots (angle and bend).
++        traits.generateDouble();
++        traits.generateDouble();
++        auto unit = [&] { return traits.generateDouble(); };
++        // A terminal leaf consumes one allocated leaf, rather than being an
++        // extra motif outside the progress budget.
++        const int leaves = leafCounts[index] - (flowers == 0 ? 1 : 0);
++        branchLeafSizes.append(leafCounts[index] == 0 ? 0 : leaves > 0 ? stats.basalLeaf : terminalLeafSize);
++        for (int leaf = 0; leaf < leaves; ++leaf) {
++            const qreal u = 0.28 + 0.64 * leaf / leaves;
++            const QPointF position = branch.pointAtPercent(u);
++            const qreal side = leaf % 2 ? -1 : 1;
++            const qreal enlargement = 1 + qBound(qreal(0), (1 - u) / 0.72, qreal(1));
++            const qreal size = (leafFloor + (5 + 12 * age) * (1 - t) * (1 - 0.55 * u)) * enlargement;
++            garden.organs.append({OrganKind::Leaf, position, degrees(tangent(branch, u)) + side * (30 + unit() * 20), size, 0, index});
++        }
++        QRandomGenerator flowering(seed ^ (quint32(node + 1) * 0x6e7329b5U));
++        flowering.generateDouble();
++        const qreal terminalFlowerSize = flowerRadius * (0.8 + 0.4 * flowering.generateDouble());
++        const qreal terminalSize = flowers == 0 ? terminalLeafSize : terminalFlowerSize;
++        garden.organs.append({flowers == 0 ? OrganKind::Leaf : OrganKind::Flower, end, degrees(endDirection(branch)), terminalSize, 0, index});
++        QRandomGenerator extraFlowers(seed ^ (quint32(node + 1) * 0x85ebca6bU));
++        for (int site = 0; site < flowers - 1; ++site) {
++            extraFlowers.generateDouble();
++            // Use most of the stem for flower centers, rather than packing
++            // all three into its distal half. Moderate silhouette overlap remains.
++            const qreal u = (flowers == 2 ? 0.12 : 0.55 - 0.45 * site) + (extraFlowers.generateDouble() - 0.5) * 0.03;
++            const qreal size = flowerRadius * (0.8 + 0.4 * extraFlowers.generateDouble());
++            garden.organs.append({OrganKind::Flower, branch.pointAtPercent(u), degrees(tangent(branch, u)), size, 0, index});
++        }
++    }
++    // Phase 3: decorate the main axis independently of branch random streams.
++    for (int flower = 0; flower < plan.axisFlowers; ++flower) {
++        // Independent fixed sites keep existing flowers stable as the main
++        // axis gains its second and third flowers.
++        QRandomGenerator axisFlower(seed ^ 0x7ad19b43U ^ (quint32(flower) * 0x9e3779b9U));
++        const qreal fraction = flower == 0 ? 0.22 + 0.18 * axisFlower.generateDouble() : 0.32 + 0.2 * flower + (axisFlower.generateDouble() - 0.5) * 0.08;
++        const qreal t = primary.path.percentAtLength(axisLength * fraction);
++        const qreal size = flowerRadius * (0.8 + 0.4 * axisFlower.generateDouble());
++        garden.organs.append({OrganKind::Flower, primary.path.pointAtPercent(t), degrees(tangent(primary.path, t)), size, 0, 0});
++    }
++    // Spread the allocated leaves across the full axis, then stagger their
++    // positions within each interval. Alternate sides without symmetric pairs.
++    const int axisLeaves = leafCounts[0] - 1;
++    QRandomGenerator foliage(seed ^ 0x43b0d7e5U);
++    const int firstSide = foliage.bounded(2) ? -1 : 1;
++    for (int i = 0; i < axisLeaves; ++i) {
++        QRandomGenerator leafTraits(seed ^ (quint32(i + 1) * 0x27d4eb2dU));
++        const qreal fraction = 0.08 + 0.84 * (i + 0.22 + leafTraits.generateDouble() * 0.56) / axisLeaves;
++        const qreal distance = axisLength * fraction;
++        const qreal t = primary.path.percentAtLength(distance);
++        qreal size = leafFloor;
++        qreal nearest = axisLength;
++        for (int branch = 0; branch < branchDistances.size(); ++branch) {
++            if (branchLeafSizes[branch] > 0 && std::abs(distance - branchDistances[branch]) < nearest) {
++                nearest = std::abs(distance - branchDistances[branch]);
++                size = branchLeafSizes[branch];
++            }
++        }
++        const qreal angle = firstSide * (i % 2 ? -1 : 1) * (28 + leafTraits.generateDouble() * 30);
++        garden.organs.append({OrganKind::Leaf, primary.path.pointAtPercent(t), degrees(tangent(primary.path, t)) + angle, size, 0, 0});
++    }
++    return garden;
++}
++
++}
++#endif
+diff --git a/plugins/floral/species.h b/plugins/floral/species.h
+new file mode 100644
+index 000000000..791dcfa04
+--- /dev/null
++++ b/plugins/floral/species.h
+@@ -0,0 +1,129 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef OKULAR_FLORAL_SPECIES_H
++#define OKULAR_FLORAL_SPECIES_H
++
++#include <QRandomGenerator>
++#include <array>
++#include <utility>
++
++namespace Floral
++{
++inline constexpr int bookSpeciesCount = 8;
++inline constexpr int pageSpeciesCount = 4;
++
++enum class Plan { Rose, Daisy, Lily, Bell, Umbel, Mustard };
++enum class Arrangement { Alternate, Opposite, Whorled };
++enum class LeafShape { Oval, Narrow, Lobed };
++enum class Veins { Pinnate, Parallel };
++enum class Cluster { Single, Raceme, Umbel };
++
++struct Species {
++    quint32 seed;
++    Plan plan;
++    int petals;
++    int layers;
++    qreal petalWidth;
++    LeafShape leafShape;
++    qreal leafWidth;
++    bool toothed;
++    Arrangement arrangement;
++    Veins veins;
++    int leaflets;
++    Cluster cluster;
++    int flowers;
++    qreal leafAngle;
++    qreal nodeGap;
++    qreal stemSway;
++    qreal flowerWeight;
++
++    bool operator==(const Species &) const = default;
++};
++
++using VerticalCommunity = std::array<Species, pageSpeciesCount - 1>;
++
++// A small private genome, deliberately independent of Florilegium's 62 traits.
++// Each book has six body plans plus two additional independently seeded species.
++// Multiple species may share a body plan. The constraints belong to the plan,
++// so random choices cannot give a lily serrated leaves or a mustard five petals.
++inline std::array<Species, bookSpeciesCount> speciesPool(quint32 bookSeed)
++{
++    QRandomGenerator random(bookSeed ^ 0x17c8a9e3U);
++    std::array<Species, bookSpeciesCount> pool;
++    for (int i = 0; i < int(pool.size()); ++i) {
++        Species sp {};
++        sp.seed = random.generate();
++        QRandomGenerator traits(sp.seed);
++        sp.plan = i < 6 ? Plan(i) : Plan(traits.bounded(6));
++        sp.petals = 5;
++        sp.layers = 1;
++        sp.petalWidth = 0.35 + traits.generateDouble() * 0.15;
++        sp.leafShape = LeafShape::Oval;
++        sp.leafWidth = 0.24 + traits.generateDouble() * 0.12;
++        sp.toothed = traits.bounded(2);
++        sp.arrangement = Arrangement::Alternate;
++        sp.veins = Veins::Pinnate;
++        sp.leaflets = 1;
++        sp.cluster = Cluster::Single;
++        sp.flowers = 1;
++        sp.leafAngle = 35 + traits.generateDouble() * 25;
++        sp.nodeGap = 32 + traits.generateDouble() * 18;
++        sp.stemSway = 7 + traits.generateDouble() * 10;
++        sp.flowerWeight = 0.4 + traits.generateDouble() * 0.25;
++        switch (sp.plan) {
++        case Plan::Rose:
++            sp.layers = 1 + traits.bounded(2);
++            sp.leaflets = traits.bounded(2) ? 5 : 3;
++            sp.toothed = true;
++            break;
++        case Plan::Daisy:
++            sp.petals = 12 + traits.bounded(11);
++            sp.petalWidth = 0.13 + traits.generateDouble() * 0.08;
++            sp.leafShape = LeafShape::Lobed;
++            break;
++        case Plan::Lily:
++            sp.petals = 6;
++            sp.petalWidth = 0.2 + traits.generateDouble() * 0.12;
++            sp.leafShape = LeafShape::Narrow;
++            sp.leafWidth = 0.1 + traits.generateDouble() * 0.07;
++            sp.veins = Veins::Parallel;
++            sp.toothed = false;
++            sp.arrangement = traits.bounded(2) ? Arrangement::Whorled : Arrangement::Alternate;
++            break;
++        case Plan::Bell:
++            sp.cluster = Cluster::Raceme;
++            sp.flowers = 3 + traits.bounded(3);
++            sp.arrangement = traits.bounded(2) ? Arrangement::Opposite : Arrangement::Alternate;
++            break;
++        case Plan::Umbel:
++            sp.cluster = Cluster::Umbel;
++            sp.flowers = 5 + traits.bounded(4);
++            sp.leaflets = traits.bounded(2) ? 5 : 7;
++            sp.leafShape = LeafShape::Narrow;
++            break;
++        case Plan::Mustard:
++            sp.petals = 4;
++            sp.cluster = Cluster::Raceme;
++            sp.flowers = 3 + traits.bounded(3);
++            sp.leafShape = LeafShape::Lobed;
++            break;
++        }
++        pool[i] = sp;
++    }
++    return pool;
++}
++
++// Select the document's four species once from the book seed. Page seeds
++// affect growth geometry only; species identity and layout roles stay fixed.
++inline std::array<Species, pageSpeciesCount> community(quint32 bookSeed)
++{
++    const auto pool = speciesPool(bookSeed);
++    std::array<int, bookSpeciesCount> order {0, 1, 2, 3, 4, 5, 6, 7};
++    QRandomGenerator random(bookSeed ^ 0x96cb37e1U);
++    for (int i = int(order.size()) - 1; i > 0; --i) {
++        std::swap(order[i], order[random.bounded(i + 1)]);
++    }
++    return {pool[order[0]], pool[order[1]], pool[order[2]], pool[order[3]]};
++}
++}
++
++#endif
+-- 
+2.56.0
+
